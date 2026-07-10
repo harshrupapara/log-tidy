@@ -80,7 +80,7 @@ class IISParser(LogParser):
 
         return min(score, 1.0)
 
-    def parse(self, lines: list[str]) -> list[LogRecord]:
+    def parse(self, lines: list[str], context: Optional[dict] = None) -> list[LogRecord]:
         records: list[LogRecord] = []
         field_names: list[str] = []
 

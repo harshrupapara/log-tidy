@@ -127,7 +127,7 @@ class JsonLinesParser(LogParser):
         # Azure-specific fields.
         return min(json_ratio * 0.5 + msg_ratio * 0.3 + level_ratio * 0.2, 0.75)
 
-    def parse(self, lines: list[str]) -> list[LogRecord]:
+    def parse(self, lines: list[str], context: Optional[dict] = None) -> list[LogRecord]:
         records: list[LogRecord] = []
 
         for line in lines:

@@ -50,6 +50,7 @@ export interface CompressionResponse {
   lines_excluded_no_timestamp: number;
   clusters: ClusterResult[];
   tidy_text_summary: string;
+  no_date_warning: string | null;
 }
 
 export interface FormatListResponse {

@@ -47,9 +47,62 @@ class LogParser(ABC):
         ...
 
     @abstractmethod
-    def parse(self, lines: list[str]) -> list[LogRecord]:
+    def parse(
+        self,
+        lines: list[str],
+        context: Optional[dict] = None,
+    ) -> list[LogRecord]:
         """
         Parse the full line set into normalised LogRecords.
         Must never raise — worst case return a best-effort partial result.
         """
         ...
+
+
+import re
+from datetime import datetime, date, time
+
+
+def extract_date_from_filename(filename: Optional[str]) -> Optional[date]:
+    if not filename:
+        return None
+    # 1. Look for 8 consecutive digits (YYYYMMDD)
+    for match in re.finditer(r'(?<!\d)(\d{8})(?!\d)', filename):
+        ds = match.group(1)
+        try:
+            return datetime.strptime(ds, "%Y%m%d").date()
+        except ValueError:
+            pass
+
+    # 2. Look for YYYY-MM-DD or YYYY_MM_DD or YYYY.MM.DD
+    match = re.search(r'(?<!\d)(\d{4})[-_.](\d{2})[-_.](\d{2})(?!\d)', filename)
+    if match:
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            pass
+
+    # 3. Look for IIS exYYMMDD format (e.g. ex250218.log)
+    match = re.search(r'\bex(\d{6})\b', filename, re.IGNORECASE)
+    if match:
+        ds = match.group(1)
+        try:
+            return datetime.strptime("20" + ds, "%Y%m%d").date()
+        except ValueError:
+            pass
+
+    return None
+
+def parse_time_with_fallback(time_str: str, fallback_date: Optional[date]) -> Optional[datetime]:
+    if not fallback_date or not time_str:
+        return None
+    clean = time_str.strip().replace(',', '.')
+    for fmt in ("%H:%M:%S.%f", "%H:%M:%S"):
+        try:
+            t_obj = datetime.strptime(clean, fmt)
+            return datetime.combine(fallback_date, t_obj.time())
+        except ValueError:
+            continue
+    return None
+
+

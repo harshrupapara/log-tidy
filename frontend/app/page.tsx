@@ -867,6 +867,13 @@ export default function Home() {
                 </div>
               )}
 
+              {result.no_date_warning && (
+                <div id="no-date-warning-banner" className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-2.5 text-xs font-mono text-red-400">
+                  ⚠ {result.no_date_warning}
+                </div>
+              )}
+
+
               {/* Top bar: info + copy */}
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-600">

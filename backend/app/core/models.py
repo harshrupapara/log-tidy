@@ -81,3 +81,5 @@ class CompressionResponse(BaseModel):
     # unique error signature with count, first_seen, last_seen and sample_raw
     # — no more one-entry-per-occurrence flooding.
     tidy_text_summary: str
+    no_date_warning: Optional[str] = None
+

@@ -122,7 +122,7 @@ class AzureDiagnosticsParser(LogParser):
 
         return json_ratio * 0.4 + avg_azure_score * 0.6
 
-    def parse(self, lines: list[str]) -> list[LogRecord]:
+    def parse(self, lines: list[str], context: Optional[dict] = None) -> list[LogRecord]:
         records: list[LogRecord] = []
 
         for line in lines:

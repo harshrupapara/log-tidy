@@ -90,8 +90,9 @@ class GenericFallbackParser(LogParser):
         # fallback when no other parser scores above the threshold.
         return 0.1
 
-    def parse(self, entries: list[str]) -> list[LogRecord]:
+    def parse(self, entries: list[str], context: Optional[dict] = None) -> list[LogRecord]:
         records: list[LogRecord] = []
+        fallback_date = context.get("fallback_date") if context else None
 
         for entry in entries:
             # Each entry may be multi-line (pre-stitched by stitcher.py).
@@ -111,6 +112,7 @@ class GenericFallbackParser(LogParser):
             ts: Optional[datetime] = None
             message = stripped + continuation
 
+            matched = False
             for pattern, fmt in _TIMESTAMP_PATTERNS:
                 m = pattern.match(stripped.strip())
                 if m:
@@ -121,7 +123,19 @@ class GenericFallbackParser(LogParser):
                         # Strip the matched timestamp from the first-line message.
                         remainder = stripped.strip()[len(ts_str):].lstrip(" \t:-")
                         message = (remainder if remainder else stripped) + continuation
+                        matched = True
                     break
+
+            if not matched and fallback_date:
+                m_to = re.match(r"^(\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)", stripped.strip())
+                if m_to:
+                    ts_str = m_to.group(1)
+                    from app.parsers.base import parse_time_with_fallback
+                    parsed = parse_time_with_fallback(ts_str, fallback_date)
+                    if parsed is not None:
+                        ts = parsed
+                        remainder = stripped.strip()[len(ts_str):].lstrip(" \t:-")
+                        message = (remainder if remainder else stripped) + continuation
 
             records.append(
                 LogRecord(
@@ -134,3 +148,4 @@ class GenericFallbackParser(LogParser):
             )
 
         return records
+

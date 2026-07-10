@@ -92,7 +92,7 @@ class DotNetExceptionParser(LogParser):
         # signals like ManagedPoolThread) can outrank us on Sitecore files.
         return min(score, 0.85)
 
-    def parse(self, entries: list[str]) -> list[LogRecord]:
+    def parse(self, entries: list[str], context: Optional[dict] = None) -> list[LogRecord]:
         records: list[LogRecord] = []
 
         for entry in entries:

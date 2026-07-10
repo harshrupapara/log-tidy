@@ -86,14 +86,29 @@ async def compress_logs(
     # ── Detect format (on original lines so dotnet_exception sees "at " lines) ─
     parser, confidence = detect_parser(lines)
 
+    # ── Resolve fallback date from filename ──────────────────────────────────
+    from app.parsers.base import extract_date_from_filename
+    filename = file.filename if file else None
+    fallback_date = extract_date_from_filename(filename)
+
     # ── Pre-stitch (group continuation/stack-trace lines before parsing) ────
     stitched = stitch_lines(lines)
 
     # ── Parse ────────────────────────────────────────────────────────────────
     try:
-        records = parser.parse(stitched)
+        records = parser.parse(stitched, context={"fallback_date": fallback_date})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Parser error: {exc}")
+
+    # ── Check for time-only logs warning ────────────────────────────────────
+    import re
+    no_date_warning = None
+    if not fallback_date:
+        # Match time-only prefix (e.g. "22:38:51" or "2340 22:38:51")
+        time_only_re = re.compile(r"^(\d{2}:\d{2}:\d{2}|^\d+\s+\d{2}:\d{2}:\d{2})")
+        has_time_only = any(time_only_re.match(r.raw.strip()) for r in records)
+        if has_time_only:
+            no_date_warning = "No date detected in logs or filename. Timestamps will be time-only."
 
     # ── Level scan (safety net — fills level=None for any parser that missed it)
     records = apply_level_scan(records)
@@ -135,4 +150,6 @@ async def compress_logs(
         lines_excluded_no_timestamp=lines_excluded_no_ts,
         clusters=clusters,
         tidy_text_summary=tidy,
+        no_date_warning=no_date_warning,
     )
+
