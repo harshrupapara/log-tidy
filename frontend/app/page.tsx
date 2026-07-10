@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   compressLogs,
+  getFormats,
   type CompressionResponse,
   type ClusterResult,
   type ParameterStats,
@@ -21,11 +22,22 @@ const HIGH_SEVERITY = new Set(["ERROR", "CRITICAL", "FATAL", "AUDIT"]);
 const WARN_LEVELS    = new Set(["WARN", "WARNING"]);
 const PAGE_SIZE      = 25;
 const PREVIEW_SIZE   = 10;
+const MAX_HISTORY    = 3;
+const SIDEBAR_W      = 264; // px — matches w-66 below
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type SortKey     = "count" | "first_seen";
 type LevelFilter = "all" | "error" | "warn" | "info";
+
+interface SessionEntry {
+  id: string;
+  label: string;        // filename or "pasted text"
+  ts: number;           // Date.now() when compressed
+  format: string;
+  ratio: number;
+  result: CompressionResponse;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -76,8 +88,33 @@ function compressionPct(total: number, clusters: number): number {
   return Math.round((1 - clusters / total) * 100);
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function timeAgo(ts: number): string {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
+function downloadBlob(content: string, filename: string, type: string) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function parserDisplayName(name: string): string {
+  const map: Record<string, string> = {
+    sitecore: "Sitecore",
+    azure_diagnostics: "Azure Diagnostics",
+    iis: "IIS",
+    json_lines: "JSON Lines",
+    dotnet_exception: ".NET Exception",
+    generic_fallback: "Generic",
+  };
+  return map[name] ?? name;
 }
 
 // ── Highlight ─────────────────────────────────────────────────────────────────
@@ -98,7 +135,6 @@ function Highlight({ text, query }: { text: string; query: string }) {
 }
 
 // ── TemplateDisplay ───────────────────────────────────────────────────────────
-// Renders the template with parameter ranges injected inline at each <*>.
 
 function TemplateDisplay({
   template,
@@ -126,7 +162,6 @@ function TemplateDisplay({
         const param = params.find((p) => p.position === i - 1);
         return (
           <span key={i}>
-            {/* Inline parameter annotation before this fixed part */}
             {param && (
               <span
                 className={`font-bold rounded px-1 text-[10px] ${
@@ -149,7 +184,6 @@ function TemplateDisplay({
                     : `${param.distinct_count} val${param.distinct_count !== 1 ? "s" : ""}`}
               </span>
             )}
-            {/* Fixed text — with search highlight */}
             {!param && i > 0 && (
               <span className="text-zinc-500 text-[10px]">&lt;*&gt;</span>
             )}
@@ -175,18 +209,19 @@ function LevelBadge({ level }: { level: string | null }) {
 
 // ── StatCard ──────────────────────────────────────────────────────────────────
 
-function StatCard({ label, value, accent }: {
-  label: string; value: string | number; accent?: string;
+function StatCard({ label, value, accent, sub }: {
+  label: string; value: string | number; accent?: string; sub?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-0.5 px-4 py-3 rounded-lg bg-zinc-900 border border-zinc-800">
       <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-mono">{label}</span>
       <span className={`text-xl font-mono font-bold ${accent ?? "text-zinc-100"}`}>{value}</span>
+      {sub && <div className="mt-0.5">{sub}</div>}
     </div>
   );
 }
 
-// ── CopyButton (small inline) ────────────────────────────────────────────────
+// ── CopyButton ────────────────────────────────────────────────────────────────
 
 function CopyBtn({ label, getText }: { label: string; getText: () => string }) {
   const [flash, setFlash] = useState(false);
@@ -277,7 +312,6 @@ function ClusterCard({
   const [showOccurrences, setShowOccurrences] = useState(false);
   const color = levelColor(cluster.level);
 
-  // Reset occurrences view when card collapses
   useEffect(() => {
     if (!isExpanded) setShowOccurrences(false);
   }, [isExpanded]);
@@ -308,9 +342,7 @@ function ClusterCard({
       (o) => `${o.timestamp ?? "?"}  ${o.raw.split("\n")[0]}`
     );
     if (cluster.occurrences_truncated) {
-      lines.push(
-        `… (${cluster.count - cluster.occurrences.length} more occurrences not shown)`
-      );
+      lines.push(`… (${cluster.count - cluster.occurrences.length} more occurrences not shown)`);
     }
     return lines.join("\n");
   };
@@ -322,7 +354,7 @@ function ClusterCard({
       }`}
       onClick={onToggle}
     >
-      {/* ── Compact header — always visible ─────────────────────────────── */}
+      {/* Compact header — always visible */}
       <div className="flex items-center gap-2 px-3 py-2 min-w-0">
         <span className="text-zinc-700 text-[10px] w-5 shrink-0 text-right tabular-nums">{index}</span>
         <LevelBadge level={cluster.level} />
@@ -333,7 +365,6 @@ function ClusterCard({
         >
           ×{cluster.count.toLocaleString()}
         </span>
-        {/* Template with parameter annotations */}
         <span
           className={`flex-1 text-xs font-mono truncate min-w-0 ${
             isHighSev ? "text-zinc-200" : "text-zinc-400"
@@ -354,13 +385,13 @@ function ClusterCard({
         </span>
       </div>
 
-      {/* ── Expanded body — NOT mounted when collapsed (true DOM collapse) ─ */}
+      {/* Expanded body — NOT mounted when collapsed */}
       {isExpanded && (
         <div
           className="px-3 pb-3 space-y-3 border-t border-white/5"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Full template with params (not truncated) */}
+          {/* Full template */}
           <div className="pt-2">
             <TemplateDisplay
               template={cluster.template}
@@ -376,7 +407,7 @@ function ClusterCard({
             <span>last:  {formatTs(cluster.last_seen)}</span>
           </div>
 
-          {/* Parameter stats table */}
+          {/* Parameter stats */}
           {cluster.parameters.length > 0 && (
             <div className="rounded border border-zinc-800 overflow-hidden text-[10px] font-mono">
               <div className="px-2 py-1 bg-zinc-900 text-zinc-600 border-b border-zinc-800 flex gap-2">
@@ -438,7 +469,7 @@ function ClusterCard({
             </pre>
           )}
 
-          {/* Occurrence drill-down toggle */}
+          {/* Occurrence drill-down */}
           {cluster.occurrences.length > 0 && (
             <div>
               <button
@@ -472,102 +503,128 @@ function ClusterCard({
   );
 }
 
-// ── StickyBar ─────────────────────────────────────────────────────────────────
+// ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function StickyBar({
+function Sidebar({
+  open,
   search, setSearch,
   levelFilter, setLevelFilter,
   sortKey, setSortKey,
   onCollapseAll, onExpandAll,
   totalClusters, highCount, warnCount, infoCount,
 }: {
+  open: boolean;
   search: string; setSearch: (s: string) => void;
   levelFilter: LevelFilter; setLevelFilter: (f: LevelFilter) => void;
   sortKey: SortKey; setSortKey: (s: SortKey) => void;
   onCollapseAll: () => void; onExpandAll: () => void;
   totalClusters: number; highCount: number; warnCount: number; infoCount: number;
 }) {
-  const filters: [LevelFilter, string, string][] = [
-    ["all",   `all·${totalClusters}`, "border-zinc-700 text-zinc-400"],
-    ["error", `err·${highCount}`,     "border-red-500/40 text-red-400 bg-red-500/10"],
-    ["warn",  `warn·${warnCount}`,    "border-amber-500/40 text-amber-400 bg-amber-500/10"],
-    ["info",  `info·${infoCount}`,    "border-cyan-500/40 text-cyan-400 bg-cyan-500/10"],
+  const filters: [LevelFilter, string, string, string][] = [
+    ["all",   "All",  `${totalClusters}`, "border-zinc-700 text-zinc-300 hover:border-zinc-600"],
+    ["error", "Error / Audit", `${highCount}`,   "border-red-500/40 text-red-400 bg-red-500/5 hover:bg-red-500/10"],
+    ["warn",  "Warn", `${warnCount}`,  "border-amber-500/40 text-amber-400 bg-amber-500/5 hover:bg-amber-500/10"],
+    ["info",  "Info / Debug", `${infoCount}`,  "border-cyan-500/40 text-cyan-400 bg-cyan-500/5 hover:bg-cyan-500/10"],
   ];
 
+  if (!open) return null;
+
   return (
-    <div className="sticky top-0 z-20 bg-zinc-950/96 backdrop-blur-md border-b border-zinc-800 px-3 py-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap">
-      {/* Search */}
-      <input
-        id="cluster-search"
-        type="text"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="search clusters…"
-        className="w-40 sm:w-52 bg-zinc-900 border border-zinc-700 rounded px-2 py-0.5 font-mono text-[11px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors"
-      />
+    <aside
+      className="fixed top-[57px] bottom-0 left-0 z-30 flex flex-col bg-zinc-950 border-r border-zinc-800 overflow-y-auto"
+      style={{ width: SIDEBAR_W }}
+    >
+      <div className="p-4 space-y-5 flex-1">
 
-      <div className="h-3 w-px bg-zinc-800 hidden sm:block" />
+        {/* Search */}
+        <div className="space-y-1.5">
+          <label className="text-[10px] uppercase tracking-widest text-zinc-600 font-mono block">Search</label>
+          <input
+            id="cluster-search"
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="search clusters…"
+            className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 font-mono text-[11px] text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors"
+          />
+        </div>
 
-      {/* Level filter */}
-      <div className="flex items-center gap-1">
-        <span className="text-[10px] font-mono text-zinc-600 mr-0.5">filter:</span>
-        {filters.map(([key, label, activeClass]) => (
-          <button
-            key={key}
-            id={`filter-${key}`}
-            onClick={() => setLevelFilter(key)}
-            className={`px-2 py-0.5 rounded border text-[10px] font-mono transition-colors ${
-              levelFilter === key
-                ? activeClass
-                : "border-zinc-800 text-zinc-600 hover:text-zinc-400"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+        <div className="h-px bg-zinc-800" />
+
+        {/* Level filter */}
+        <div className="space-y-1.5">
+          <label className="text-[10px] uppercase tracking-widest text-zinc-600 font-mono block">Filter</label>
+          <div className="space-y-1">
+            {filters.map(([key, label, count, activeBase]) => (
+              <button
+                key={key}
+                id={`filter-${key}`}
+                onClick={() => setLevelFilter(key)}
+                className={`w-full flex items-center justify-between px-3 py-1.5 rounded-lg border text-[11px] font-mono transition-colors ${
+                  levelFilter === key
+                    ? activeBase + " opacity-100"
+                    : "border-zinc-800 text-zinc-600 hover:text-zinc-400 hover:border-zinc-700"
+                }`}
+              >
+                <span>{label}</span>
+                <span className="tabular-nums text-[10px] opacity-70">{count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="h-px bg-zinc-800" />
+
+        {/* Sort */}
+        <div className="space-y-1.5">
+          <label className="text-[10px] uppercase tracking-widest text-zinc-600 font-mono block">Sort by</label>
+          <div className="flex gap-1.5">
+            {([["count", "frequency"], ["first_seen", "time"]] as [SortKey, string][]).map(([key, label]) => (
+              <button
+                key={key}
+                id={`sort-${key}`}
+                onClick={() => setSortKey(key)}
+                className={`flex-1 py-1.5 rounded-lg border text-[11px] font-mono transition-colors ${
+                  sortKey === key
+                    ? "border-green-500/40 text-green-400 bg-green-500/10"
+                    : "border-zinc-800 text-zinc-600 hover:text-zinc-400 hover:border-zinc-700"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="h-px bg-zinc-800" />
+
+        {/* Bulk actions */}
+        <div className="space-y-1.5">
+          <label className="text-[10px] uppercase tracking-widest text-zinc-600 font-mono block">View</label>
+          <div className="flex gap-1.5">
+            <button
+              id="collapse-all-btn"
+              onClick={onCollapseAll}
+              className="flex-1 py-1.5 rounded-lg border border-zinc-800 text-[11px] font-mono text-zinc-600 hover:text-zinc-400 hover:border-zinc-700 transition-colors"
+            >
+              collapse all
+            </button>
+            <button
+              id="expand-all-btn"
+              onClick={onExpandAll}
+              className="flex-1 py-1.5 rounded-lg border border-zinc-800 text-[11px] font-mono text-zinc-600 hover:text-zinc-400 hover:border-zinc-700 transition-colors"
+            >
+              expand all
+            </button>
+          </div>
+        </div>
       </div>
 
-      <div className="h-3 w-px bg-zinc-800 hidden sm:block" />
-
-      {/* Sort */}
-      <div className="flex items-center gap-1">
-        <span className="text-[10px] font-mono text-zinc-600 mr-0.5">sort:</span>
-        {([ ["count", "freq"], ["first_seen", "time"] ] as [SortKey, string][]).map(([key, label]) => (
-          <button
-            key={key}
-            id={`sort-${key}`}
-            onClick={() => setSortKey(key)}
-            className={`px-2 py-0.5 rounded border text-[10px] font-mono transition-colors ${
-              sortKey === key
-                ? "border-green-500/40 text-green-400 bg-green-500/10"
-                : "border-zinc-800 text-zinc-600 hover:text-zinc-400"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      {/* Sidebar footer */}
+      <div className="p-4 border-t border-zinc-800 text-[10px] font-mono text-zinc-700 text-center">
+        {totalClusters.toLocaleString()} clusters
       </div>
-
-      <div className="h-3 w-px bg-zinc-800 hidden sm:block" />
-
-      {/* Bulk actions */}
-      <div className="flex items-center gap-1">
-        <button
-          id="collapse-all-btn"
-          onClick={onCollapseAll}
-          className="px-2 py-0.5 rounded border border-zinc-800 text-[10px] font-mono text-zinc-600 hover:text-zinc-400 hover:border-zinc-700 transition-colors"
-        >
-          collapse all
-        </button>
-        <button
-          id="expand-all-btn"
-          onClick={onExpandAll}
-          className="px-2 py-0.5 rounded border border-zinc-800 text-[10px] font-mono text-zinc-600 hover:text-zinc-400 hover:border-zinc-700 transition-colors"
-        >
-          expand all
-        </button>
-      </div>
-    </div>
+    </aside>
   );
 }
 
@@ -599,17 +656,22 @@ function PaginationBar({ page, totalPages, total, onPrev, onNext }: {
 
 export default function Home() {
   // ── Input ────────────────────────────────────────────────────────────────
-  const [logText, setLogText]   = useState("");
-  const [file, setFile]         = useState<File | null>(null);
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime]   = useState("");
+  const [logText, setLogText]           = useState("");
+  const [file, setFile]                 = useState<File | null>(null);
+  const [startTime, setStartTime]       = useState("");
+  const [endTime, setEndTime]           = useState("");
+  const [formatOverride, setFormatOverride] = useState("");
+  const [availableFormats, setAvailableFormats] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── Request ───────────────────────────────────────────────────────────────
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
   const [result, setResult]     = useState<CompressionResponse | null>(null);
-  const [copied, setCopied]     = useState(false);
+
+  // ── Session history ───────────────────────────────────────────────────────
+  const [history, setHistory]             = useState<SessionEntry[]>([]);
+  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
 
   // ── Results view ──────────────────────────────────────────────────────────
   const [sortKey, setSortKey]         = useState<SortKey>("count");
@@ -619,14 +681,20 @@ export default function Home() {
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
   const [showAll, setShowAll]   = useState(false);
   const [page, setPage]         = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // Debounce search
+  // ── Load available formats on mount ──────────────────────────────────────
+  useEffect(() => {
+    getFormats().then(setAvailableFormats).catch(() => {});
+  }, []);
+
+  // ── Debounce search ───────────────────────────────────────────────────────
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 150);
     return () => clearTimeout(t);
   }, [search]);
 
-  // Reset view on new result
+  // ── Reset view on new result ──────────────────────────────────────────────
   useEffect(() => {
     if (!result) return;
     const initExpanded = new Set<string>(
@@ -641,9 +709,10 @@ export default function Home() {
     setLevelFilter("all");
     setSearch("");
     setDebouncedSearch("");
+    setSidebarOpen(true);
   }, [result]);
 
-  // Reset page on filter / sort / search change
+  // ── Reset page on filter / sort / search change ───────────────────────────
   useEffect(() => { setPage(0); }, [levelFilter, sortKey, debouncedSearch]);
 
   // ── Computed data ─────────────────────────────────────────────────────────
@@ -689,7 +758,7 @@ export default function Home() {
   const isSearching = debouncedSearch.trim().length > 0;
   const totalPages = Math.ceil(otherClusters.length / PAGE_SIZE);
   const visibleOther = useMemo(() => {
-    if (isSearching) return otherClusters;              // show all matches when searching
+    if (isSearching) return otherClusters;
     if (!showAll) return otherClusters.slice(0, PREVIEW_SIZE);
     return otherClusters.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   }, [otherClusters, showAll, page, isSearching]);
@@ -704,6 +773,12 @@ export default function Home() {
 
   const ratio = result ? compressionPct(result.lines_in_window, result.clusters.length) : 0;
 
+  // Whether to show the format warning banner
+  const showFormatWarning = result && (
+    result.detected_format === "generic_fallback" ||
+    result.detection_confidence < 0.7
+  );
+
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleCompress = useCallback(async () => {
@@ -711,21 +786,54 @@ export default function Home() {
     setError(null);
     setLoading(true);
     try {
-      const res = await compressLogs(logText || null, file, startTime || null, endTime || null);
+      const res = await compressLogs(
+        logText || null,
+        file,
+        startTime || null,
+        endTime || null,
+        formatOverride || null,
+      );
       setResult(res);
+
+      // Push to session history
+      const entry: SessionEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        label: file?.name ?? "pasted text",
+        ts: Date.now(),
+        format: res.detected_format,
+        ratio: compressionPct(res.lines_in_window, res.clusters.length),
+        result: res,
+      };
+      setHistory((prev) => [entry, ...prev].slice(0, MAX_HISTORY));
+      setActiveHistoryId(entry.id);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setLoading(false);
     }
-  }, [logText, file, startTime, endTime]);
+  }, [logText, file, startTime, endTime, formatOverride]);
 
-  const handleCopy = useCallback(() => {
+  const handleNewCompression = useCallback(() => {
+    setLogText("");
+    setFile(null);
+    if (fileRef.current) fileRef.current.value = "";
+    setStartTime("");
+    setEndTime("");
+    setFormatOverride("");
+    setResult(null);
+    setError(null);
+    setActiveHistoryId(null);
+    setSidebarOpen(false);
+  }, []);
+
+  const handleDownloadTxt = useCallback(() => {
     if (!result) return;
-    navigator.clipboard.writeText(result.tidy_text_summary).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    downloadBlob(result.tidy_text_summary, "logtidy-summary.txt", "text/plain");
+  }, [result]);
+
+  const handleDownloadJson = useCallback(() => {
+    if (!result) return;
+    downloadBlob(JSON.stringify(result, null, 2), "logtidy-result.json", "application/json");
   }, [result]);
 
   const toggleCluster = useCallback((template: string) => {
@@ -742,112 +850,211 @@ export default function Home() {
     [filteredClusters]
   );
 
+  const restoreHistory = useCallback((entry: SessionEntry) => {
+    setResult(entry.result);
+    setActiveHistoryId(entry.id);
+  }, []);
+
+  // ── Content margin — shift right when sidebar is open ─────────────────────
+  const contentStyle = result && sidebarOpen
+    ? { marginLeft: SIDEBAR_W }
+    : {};
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
-      {/* ── Header ──────────────────────────────────────────────────────── */}
-      <header className="border-b border-zinc-800 px-6 py-4 flex items-center gap-3 shrink-0">
-        <div className="scanline-glow w-2 h-2 rounded-full bg-green-400" />
+
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 border-b border-zinc-800 px-5 py-3.5 flex items-center gap-3 bg-zinc-950 shrink-0" style={{ height: 57 }}>
+        {/* Sidebar toggle — only when results are showing */}
+        {result && (
+          <button
+            id="sidebar-toggle"
+            onClick={() => setSidebarOpen((v) => !v)}
+            className="p-1.5 rounded border border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700 transition-colors text-[11px] font-mono shrink-0"
+            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          >
+            {sidebarOpen ? "◀" : "▶"}
+          </button>
+        )}
+
+        <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" style={{ boxShadow: "0 0 6px #4ade80" }} />
         <span className="font-mono text-lg font-bold tracking-tight">
           log<span className="text-green-400">tidy</span>
         </span>
-        <span className="ml-2 text-[11px] text-zinc-600 font-mono hidden sm:inline">
+        <span className="ml-1 text-[11px] text-zinc-600 font-mono hidden sm:inline">
           // universal log compression
         </span>
-      </header>
 
-      <div className="flex-1 flex flex-col">
-        {/* ── Sticky mini-bar (only while results are showing) ─────────── */}
-        {result && (
-          <StickyBar
-            search={search} setSearch={setSearch}
-            levelFilter={levelFilter} setLevelFilter={setLevelFilter}
-            sortKey={sortKey} setSortKey={setSortKey}
-            onCollapseAll={collapseAll} onExpandAll={expandAll}
-            totalClusters={barStats.total}
-            highCount={barStats.high}
-            warnCount={barStats.warn}
-            infoCount={barStats.info}
-          />
+        <div className="flex-1" />
+
+        {/* History strip */}
+        {history.length > 0 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto">
+            {history.map((entry) => (
+              <button
+                key={entry.id}
+                onClick={() => restoreHistory(entry)}
+                title={`${entry.label} — ${parserDisplayName(entry.format)} · ${entry.ratio}% compression`}
+                className={`shrink-0 px-2.5 py-1 rounded border text-[10px] font-mono transition-colors whitespace-nowrap ${
+                  activeHistoryId === entry.id
+                    ? "border-green-500/40 text-green-400 bg-green-500/10"
+                    : "border-zinc-800 text-zinc-600 hover:text-zinc-400 hover:border-zinc-700"
+                }`}
+              >
+                {entry.label.length > 18 ? entry.label.slice(0, 16) + "…" : entry.label}
+                <span className="ml-1.5 opacity-60">{timeAgo(entry.ts)}</span>
+              </button>
+            ))}
+          </div>
         )}
 
-        <main className="flex-1 mx-auto w-full max-w-5xl px-4 py-8 space-y-6">
-          {/* ── Input panel ───────────────────────────────────────────── */}
-          <div className="grid grid-cols-1 gap-4">
-            <div className="space-y-2">
-              <label className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">
-                Paste logs
-              </label>
-              <textarea
-                id="log-input"
-                className="w-full h-40 bg-zinc-900 border border-zinc-800 rounded-lg p-3 font-mono text-xs text-zinc-300 placeholder-zinc-700 resize-y focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors"
-                placeholder={"2026-07-08 12:00:01 ERROR  ManagedPoolThread SolrConnectionException ...\n{\"timestamp\":\"2026-07-08T12:00:01Z\",\"level\":\"error\",...}\n#Fields: date time s-ip cs-method cs-uri-stem ..."}
-                value={logText}
-                onChange={(e) => { setLogText(e.target.value); if (e.target.value) setFile(null); }}
-              />
-            </div>
+        {/* New compression button */}
+        {result && (
+          <button
+            id="new-compression-btn"
+            onClick={handleNewCompression}
+            className="shrink-0 px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 font-mono text-xs hover:border-green-500/40 hover:text-green-400 transition-colors"
+          >
+            + new
+          </button>
+        )}
+      </header>
 
-            <div className="flex items-center gap-4">
-              <div className="h-px flex-1 bg-zinc-800" />
-              <span className="text-[11px] font-mono text-zinc-600">or upload</span>
-              <div className="h-px flex-1 bg-zinc-800" />
-            </div>
+      {/* ── Sidebar ────────────────────────────────────────────────────── */}
+      {result && (
+        <Sidebar
+          open={sidebarOpen}
+          search={search} setSearch={setSearch}
+          levelFilter={levelFilter} setLevelFilter={setLevelFilter}
+          sortKey={sortKey} setSortKey={setSortKey}
+          onCollapseAll={collapseAll} onExpandAll={expandAll}
+          totalClusters={barStats.total}
+          highCount={barStats.high}
+          warnCount={barStats.warn}
+          infoCount={barStats.info}
+        />
+      )}
 
-            <div>
-              <input ref={fileRef} type="file" id="file-upload" className="hidden"
-                accept=".log,.txt,.json,.ndjson"
-                onChange={(e) => { const f = e.target.files?.[0] ?? null; setFile(f); if (f) setLogText(""); }}
-              />
-              <button id="file-upload-btn" onClick={() => fileRef.current?.click()}
-                className="w-full py-2.5 rounded-lg border border-dashed border-zinc-700 text-zinc-500 font-mono text-sm hover:border-green-500/40 hover:text-green-400 transition-colors">
-                {file
-                  ? <span className="text-green-400">✓ {file.name} ({(file.size / 1024).toFixed(1)} KB)</span>
-                  : "click to upload .log / .json / .txt"}
+      {/* ── Main content ────────────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col transition-all duration-200" style={contentStyle}>
+        <main className="flex-1 mx-auto w-full max-w-4xl px-4 py-8 space-y-6">
+
+          {/* ── Input panel ─────────────────────────────────────────── */}
+          {!result && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">
+                  Paste logs
+                </label>
+                <textarea
+                  id="log-input"
+                  className="w-full h-40 bg-zinc-900 border border-zinc-800 rounded-lg p-3 font-mono text-xs text-zinc-300 placeholder-zinc-700 resize-y focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors"
+                  placeholder={"2026-07-08 12:00:01 ERROR  ManagedPoolThread SolrConnectionException ...\n{\"timestamp\":\"2026-07-08T12:00:01Z\",\"level\":\"error\",...}\n#Fields: date time s-ip cs-method cs-uri-stem ..."}
+                  value={logText}
+                  onChange={(e) => { setLogText(e.target.value); if (e.target.value) setFile(null); }}
+                />
+              </div>
+
+              <div className="flex items-center gap-4">
+                <div className="h-px flex-1 bg-zinc-800" />
+                <span className="text-[11px] font-mono text-zinc-600">or upload</span>
+                <div className="h-px flex-1 bg-zinc-800" />
+              </div>
+
+              {/* File upload + format override row */}
+              <div className="space-y-2">
+                <input ref={fileRef} type="file" id="file-upload" className="hidden"
+                  accept=".log,.txt,.json,.ndjson"
+                  onChange={(e) => { const f = e.target.files?.[0] ?? null; setFile(f); if (f) setLogText(""); }}
+                />
+                <button id="file-upload-btn" onClick={() => fileRef.current?.click()}
+                  className="w-full py-2.5 rounded-lg border border-dashed border-zinc-700 text-zinc-500 font-mono text-sm hover:border-green-500/40 hover:text-green-400 transition-colors">
+                  {file
+                    ? <span className="text-green-400">✓ {file.name} ({(file.size / 1024).toFixed(1)} KB)</span>
+                    : "click to upload .log / .json / .txt"}
+                </button>
+
+                {/* Format override */}
+                <div className="flex items-center gap-3">
+                  <label className="text-[10px] font-mono uppercase tracking-widest text-zinc-600 shrink-0">
+                    Parser
+                  </label>
+                  <select
+                    id="format-override"
+                    value={formatOverride}
+                    onChange={(e) => setFormatOverride(e.target.value)}
+                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors appearance-none cursor-pointer"
+                  >
+                    <option value="">Auto-detect (default)</option>
+                    {availableFormats
+                      .filter((f) => f !== "generic_fallback")
+                      .map((f) => (
+                        <option key={f} value={f}>{parserDisplayName(f)}</option>
+                      ))}
+                    <option value="generic_fallback">Generic (fallback)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Time window */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">Start time (optional)</label>
+                  <input id="start-time" type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">End time (optional)</label>
+                  <input id="end-time" type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors" />
+                </div>
+              </div>
+
+              {error && (
+                <div id="error-banner" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm font-mono text-red-400">
+                  ✗ {error}
+                </div>
+              )}
+
+              <button id="compress-btn" onClick={handleCompress} disabled={loading}
+                className="w-full py-3 rounded-lg bg-green-500 hover:bg-green-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-950 font-mono font-bold text-sm tracking-wider transition-all duration-200 active:scale-[0.99]">
+                {loading
+                  ? <span className="flex items-center justify-center gap-2">
+                      <span className="inline-block w-4 h-4 border-2 border-zinc-600 border-t-green-400 rounded-full animate-spin" />
+                      compressing…
+                    </span>
+                  : "[ compress ]"}
               </button>
             </div>
+          )}
 
-            {/* Time window */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">Start time (optional)</label>
-                <input id="start-time" type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors" />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">End time (optional)</label>
-                <input id="end-time" type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors" />
+          {/* ── Loading overlay when result exists and re-compressing ── */}
+          {loading && result && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm">
+              <div className="flex flex-col items-center gap-4 p-8 rounded-xl border border-zinc-800 bg-zinc-900">
+                <span className="inline-block w-8 h-8 border-2 border-zinc-700 border-t-green-400 rounded-full animate-spin" />
+                <span className="font-mono text-sm text-zinc-400">compressing…</span>
               </div>
             </div>
+          )}
 
-            {error && (
-              <div id="error-banner" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm font-mono text-red-400">
-                ✗ {error}
-              </div>
-            )}
-
-            <button id="compress-btn" onClick={handleCompress} disabled={loading}
-              className="w-full py-3 rounded-lg bg-green-500 hover:bg-green-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-950 font-mono font-bold text-sm tracking-wider transition-all duration-200 active:scale-[0.99]">
-              {loading
-                ? <span className="flex items-center justify-center gap-2">
-                    <span className="inline-block w-4 h-4 border-2 border-zinc-600 border-t-green-400 rounded-full animate-spin" />
-                    compressing...
-                  </span>
-                : "[ compress ]"}
-            </button>
-          </div>
-
-          {/* ── Result panel ──────────────────────────────────────────── */}
+          {/* ── Result panel ────────────────────────────────────────── */}
           {result && (
             <div id="result-panel" className="space-y-5 animate-fade-in">
-              {/* Stats row */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <StatCard label="Format" value={result.detected_format} accent="text-green-400" />
+
+              {/* Stats row — 3 cards (no separate confidence card) */}
+              <div className="grid grid-cols-3 gap-3">
                 <StatCard
-                  label="Confidence"
-                  value={`${(result.detection_confidence * 100).toFixed(0)}%`}
-                  accent={result.detection_confidence > 0.7 ? "text-green-400" : "text-amber-400"}
+                  label="Format"
+                  value={parserDisplayName(result.detected_format)}
+                  accent={!showFormatWarning ? "text-green-400" : "text-amber-400"}
+                  sub={
+                    !showFormatWarning ? (
+                      <span className="text-[10px] font-mono text-green-500">✓ detected</span>
+                    ) : undefined
+                  }
                 />
                 <StatCard
                   label="Lines → Clusters"
@@ -861,127 +1068,218 @@ export default function Home() {
                 />
               </div>
 
+              {/* Format detection warning (only for weak/generic detections) */}
+              {showFormatWarning && (
+                <div id="format-warning-banner" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5 text-xs font-mono text-amber-400">
+                  ⚠ Could not confidently match a known format ({(result.detection_confidence * 100).toFixed(0)}%) — falling back to generic parsing. Timestamp and level extraction may be less accurate.
+                </div>
+              )}
+
+              {/* No timestamp excluded warning */}
               {result.lines_excluded_no_timestamp > 0 && (
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5 text-xs font-mono text-amber-400">
                   ⚠ {result.lines_excluded_no_timestamp.toLocaleString()} lines had no detectable timestamp and were excluded from the time filter.
                 </div>
               )}
 
+              {/* No date warning */}
               {result.no_date_warning && (
                 <div id="no-date-warning-banner" className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-2.5 text-xs font-mono text-red-400">
                   ⚠ {result.no_date_warning}
                 </div>
               )}
 
-
-              {/* Top bar: info + copy */}
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-600">
-                  {highSevClusters.length > 0 && (
-                    <span className="flex items-center gap-1">
-                      <span className={`w-1.5 h-1.5 rounded-full ${levelDotColor("ERROR")} inline-block`} />
-                      {highSevClusters.length} high-severity
-                    </span>
-                  )}
-                  {isSearching && (
-                    <span className="text-amber-400">
-                      {filteredClusters.length} result{filteredClusters.length !== 1 ? "s" : ""} for &ldquo;{debouncedSearch}&rdquo;
-                    </span>
-                  )}
+              {/* ── Explicit empty state ─────────────────────────────── */}
+              {result.clusters.length === 0 && (
+                <div id="empty-result-panel" className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-6 py-12 text-center space-y-2">
+                  <div className="text-2xl">∅</div>
+                  <div className="font-mono text-sm text-zinc-400">
+                    {result.total_lines === 0
+                      ? "No log lines could be parsed from this input."
+                      : "Logs were parsed but produced no clusters."}
+                  </div>
+                  <div className="font-mono text-xs text-zinc-600">
+                    {result.total_lines > 0
+                      ? `${result.total_lines.toLocaleString()} lines were read — try a different parser or check the format.`
+                      : "Check the file encoding and format, or try pasting a sample directly."}
+                  </div>
                 </div>
-                <button id="copy-btn" onClick={handleCopy}
-                  className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 font-mono text-xs hover:border-green-500/40 hover:text-green-400 transition-colors">
-                  {copied ? "✓ copied" : "copy tidy summary"}
-                </button>
+              )}
+
+              {result.clusters.length > 0 && (
+                <>
+                  {/* Top action bar */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-600">
+                      {highSevClusters.length > 0 && (
+                        <span className="flex items-center gap-1">
+                          <span className={`w-1.5 h-1.5 rounded-full ${levelDotColor("ERROR")} inline-block`} />
+                          {highSevClusters.length} high-severity
+                        </span>
+                      )}
+                      {isSearching && (
+                        <span className="text-amber-400">
+                          {filteredClusters.length} result{filteredClusters.length !== 1 ? "s" : ""} for &ldquo;{debouncedSearch}&rdquo;
+                        </span>
+                      )}
+                    </div>
+                    {/* Download + copy buttons */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        id="download-txt-btn"
+                        onClick={handleDownloadTxt}
+                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 font-mono text-xs hover:border-green-500/40 hover:text-green-400 transition-colors"
+                      >
+                        ↓ .txt
+                      </button>
+                      <button
+                        id="download-json-btn"
+                        onClick={handleDownloadJson}
+                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 font-mono text-xs hover:border-cyan-500/40 hover:text-cyan-400 transition-colors"
+                      >
+                        ↓ .json
+                      </button>
+                      <CopyBtn label="copy summary" getText={() => result.tidy_text_summary} />
+                    </div>
+                  </div>
+
+                  {/* ── High-severity section ───────────────────────── */}
+                  {highSevClusters.length > 0 && (
+                    <section id="high-severity-section" className="space-y-2">
+                      <h2 className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${levelDotColor("ERROR")} inline-block`} />
+                        High-severity — {highSevClusters.length} distinct signature{highSevClusters.length !== 1 ? "s" : ""}
+                        <span className="text-zinc-700 normal-case tracking-normal font-normal">
+                          · one row per unique error template
+                        </span>
+                      </h2>
+                      <div className="space-y-1.5">
+                        {highSevClusters.map((cluster, i) => (
+                          <ClusterCard
+                            key={cluster.cluster_id || cluster.template}
+                            cluster={cluster}
+                            index={i + 1}
+                            isExpanded={expandedKeys.has(cluster.template)}
+                            onToggle={() => toggleCluster(cluster.template)}
+                            isHighSev
+                            search={debouncedSearch}
+                          />
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {/* ── Other clusters section ──────────────────────── */}
+                  {otherClusters.length > 0 && (
+                    <section id="other-clusters-section" className="space-y-2">
+                      <h2 className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 inline-block" />
+                        {highSevClusters.length > 0 ? "Other" : "All"} clusters — {otherClusters.length.toLocaleString()} total
+                        {!isSearching && !showAll && otherClusters.length > PREVIEW_SIZE && (
+                          <span className="text-zinc-700 normal-case tracking-normal font-normal">
+                            · showing top {PREVIEW_SIZE}
+                          </span>
+                        )}
+                      </h2>
+
+                      <div className="space-y-1">
+                        {visibleOther.map((cluster, i) => {
+                          const globalIdx = showAll && !isSearching ? page * PAGE_SIZE + i + 1 : i + 1;
+                          return (
+                            <ClusterCard
+                              key={cluster.cluster_id || cluster.template}
+                              cluster={cluster}
+                              index={globalIdx}
+                              isExpanded={expandedKeys.has(cluster.template)}
+                              onToggle={() => toggleCluster(cluster.template)}
+                              isHighSev={false}
+                              search={debouncedSearch}
+                            />
+                          );
+                        })}
+                      </div>
+
+                      {!isSearching && !showAll && otherClusters.length > PREVIEW_SIZE && (
+                        <button id="show-all-btn" onClick={() => { setShowAll(true); setPage(0); }}
+                          className="w-full py-2 rounded-lg border border-dashed border-zinc-700 text-zinc-500 font-mono text-xs hover:border-green-500/40 hover:text-green-400 transition-colors">
+                          show all {otherClusters.length.toLocaleString()} clusters ({(otherClusters.length - PREVIEW_SIZE).toLocaleString()} more)
+                        </button>
+                      )}
+                      {!isSearching && showAll && (
+                        <PaginationBar
+                          page={page} totalPages={totalPages} total={otherClusters.length}
+                          onPrev={() => setPage((p) => Math.max(0, p - 1))}
+                          onNext={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                        />
+                      )}
+                    </section>
+                  )}
+
+                  {filteredClusters.length === 0 && (
+                    <div className="text-center py-8 font-mono text-xs text-zinc-600">
+                      {isSearching
+                        ? `no clusters match "${debouncedSearch}"`
+                        : "no clusters match the current filter"}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Re-compress controls (shown below result) */}
+              <div className="border-t border-zinc-800 pt-4 space-y-3">
+                <p className="text-[11px] font-mono text-zinc-600 text-center">run another compression on the same or different input</p>
+                <div className="grid grid-cols-1 gap-3">
+                  <div className="space-y-2">
+                    <textarea
+                      id="log-input-bottom"
+                      className="w-full h-24 bg-zinc-900 border border-zinc-800 rounded-lg p-3 font-mono text-xs text-zinc-300 placeholder-zinc-700 resize-y focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors"
+                      placeholder="Paste new logs here, or upload a new file below…"
+                      value={logText}
+                      onChange={(e) => { setLogText(e.target.value); if (e.target.value) setFile(null); }}
+                    />
+                    <div className="flex gap-2">
+                      <input ref={fileRef} type="file" id="file-upload-bottom" className="hidden"
+                        accept=".log,.txt,.json,.ndjson"
+                        onChange={(e) => { const f = e.target.files?.[0] ?? null; setFile(f); if (f) setLogText(""); }}
+                      />
+                      <button onClick={() => fileRef.current?.click()}
+                        className="flex-1 py-2 rounded-lg border border-dashed border-zinc-700 text-zinc-500 font-mono text-xs hover:border-green-500/40 hover:text-green-400 transition-colors">
+                        {file
+                          ? <span className="text-green-400">✓ {file.name}</span>
+                          : "upload file"}
+                      </button>
+                      <select
+                        value={formatOverride}
+                        onChange={(e) => setFormatOverride(e.target.value)}
+                        className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 transition-colors"
+                      >
+                        <option value="">Auto-detect</option>
+                        {availableFormats
+                          .filter((f) => f !== "generic_fallback")
+                          .map((f) => <option key={f} value={f}>{parserDisplayName(f)}</option>)}
+                        <option value="generic_fallback">Generic</option>
+                      </select>
+                      <button id="re-compress-btn" onClick={handleCompress} disabled={loading}
+                        className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-950 font-mono font-bold text-xs tracking-wider transition-all">
+                        compress
+                      </button>
+                    </div>
+                    {error && (
+                      <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-mono text-red-400">
+                        ✗ {error}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              {/* ── High-severity section ────────────────────────────── */}
-              {highSevClusters.length > 0 && (
-                <section id="high-severity-section" className="space-y-2">
-                  <h2 className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${levelDotColor("ERROR")} inline-block`} />
-                    High-severity — {highSevClusters.length} distinct signature{highSevClusters.length !== 1 ? "s" : ""}
-                    <span className="text-zinc-700 normal-case tracking-normal font-normal">
-                      · one row per unique error template
-                    </span>
-                  </h2>
-                  <div className="space-y-1.5">
-                    {highSevClusters.map((cluster, i) => (
-                      <ClusterCard
-                        key={cluster.cluster_id || cluster.template}
-                        cluster={cluster}
-                        index={i + 1}
-                        isExpanded={expandedKeys.has(cluster.template)}
-                        onToggle={() => toggleCluster(cluster.template)}
-                        isHighSev
-                        search={debouncedSearch}
-                      />
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {/* ── Other clusters section ───────────────────────────── */}
-              {otherClusters.length > 0 && (
-                <section id="other-clusters-section" className="space-y-2">
-                  <h2 className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 inline-block" />
-                    {highSevClusters.length > 0 ? "Other" : "All"} clusters — {otherClusters.length.toLocaleString()} total
-                    {!isSearching && !showAll && otherClusters.length > PREVIEW_SIZE && (
-                      <span className="text-zinc-700 normal-case tracking-normal font-normal">
-                        · showing top {PREVIEW_SIZE}
-                      </span>
-                    )}
-                  </h2>
-
-                  <div className="space-y-1">
-                    {visibleOther.map((cluster, i) => {
-                      const globalIdx = showAll && !isSearching ? page * PAGE_SIZE + i + 1 : i + 1;
-                      return (
-                        <ClusterCard
-                          key={cluster.cluster_id || cluster.template}
-                          cluster={cluster}
-                          index={globalIdx}
-                          isExpanded={expandedKeys.has(cluster.template)}
-                          onToggle={() => toggleCluster(cluster.template)}
-                          isHighSev={false}
-                          search={debouncedSearch}
-                        />
-                      );
-                    })}
-                  </div>
-
-                  {/* Show-all / pagination */}
-                  {!isSearching && !showAll && otherClusters.length > PREVIEW_SIZE && (
-                    <button id="show-all-btn" onClick={() => { setShowAll(true); setPage(0); }}
-                      className="w-full py-2 rounded-lg border border-dashed border-zinc-700 text-zinc-500 font-mono text-xs hover:border-green-500/40 hover:text-green-400 transition-colors">
-                      show all {otherClusters.length.toLocaleString()} clusters ({(otherClusters.length - PREVIEW_SIZE).toLocaleString()} more)
-                    </button>
-                  )}
-                  {!isSearching && showAll && (
-                    <PaginationBar
-                      page={page} totalPages={totalPages} total={otherClusters.length}
-                      onPrev={() => setPage((p) => Math.max(0, p - 1))}
-                      onNext={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                    />
-                  )}
-                </section>
-              )}
-
-              {filteredClusters.length === 0 && (
-                <div className="text-center py-8 font-mono text-xs text-zinc-600">
-                  {isSearching
-                    ? `no clusters match "${debouncedSearch}"`
-                    : "no clusters match the current filter"}
-                </div>
-              )}
             </div>
           )}
         </main>
       </div>
 
-      {/* ── Footer ───────────────────────────────────────────────────────── */}
-      <footer className="border-t border-zinc-900 px-6 py-3 text-center text-[10px] font-mono text-zinc-700">
+      {/* ── Footer ─────────────────────────────────────────────────────── */}
+      <footer className="border-t border-zinc-900 px-6 py-3 text-center text-[10px] font-mono text-zinc-700" style={contentStyle}>
         logtidy · zero config · zero cloud · paste → compress
       </footer>
     </div>

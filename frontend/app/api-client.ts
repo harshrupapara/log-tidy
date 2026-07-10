@@ -63,7 +63,8 @@ export async function compressLogs(
   logText: string | null,
   file: File | null,
   startTime: string | null,
-  endTime: string | null
+  endTime: string | null,
+  formatOverride?: string | null,
 ): Promise<CompressionResponse> {
   const form = new FormData();
 
@@ -77,6 +78,7 @@ export async function compressLogs(
 
   if (startTime) form.append("start_time", startTime);
   if (endTime) form.append("end_time", endTime);
+  if (formatOverride) form.append("format_override", formatOverride);
 
   const res = await fetch(`${API_BASE}/api/compress`, {
     method: "POST",

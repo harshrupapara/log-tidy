@@ -37,10 +37,14 @@ async def compress_logs(
     file: Optional[UploadFile] = File(None),
     start_time: Optional[str] = Form(None),
     end_time: Optional[str] = Form(None),
+    format_override: Optional[str] = Form(None),
 ) -> CompressionResponse:
     """
     Accept raw log content (pasted text or uploaded file) and return a
     structured compressed summary.
+
+    format_override: if set to a known parser name (e.g. "sitecore", "iis"),
+    skips auto-detection and forces that parser at confidence 1.0.
     """
     # ── Resolve raw text ────────────────────────────────────────────────────
     raw_text: str = ""
@@ -83,8 +87,21 @@ async def compress_logs(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid end_time: {end_time!r}")
 
-    # ── Detect format (on original lines so dotnet_exception sees "at " lines) ─
-    parser, confidence = detect_parser(lines)
+    # ── Detect or override format ────────────────────────────────────────────
+    if format_override:
+        from app.parsers.registry import REGISTERED_PARSERS
+        override_parser = next(
+            (p for p in REGISTERED_PARSERS if p.name == format_override), None
+        )
+        if override_parser is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown format override: {format_override!r}. "
+                       f"Valid options: {[p.name for p in REGISTERED_PARSERS]}",
+            )
+        parser, confidence = override_parser, 1.0
+    else:
+        parser, confidence = detect_parser(lines)
 
     # ── Resolve fallback date from filename ──────────────────────────────────
     from app.parsers.base import extract_date_from_filename
