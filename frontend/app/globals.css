@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* ── Custom properties ──────────────────────────────────────────────────── */
+:root {
+  --green: #4ade80;
+  --green-dim: #166534;
+}
+
+/* ── Base reset ─────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: #09090b; /* zinc-950 */
+  color: #f4f4f5;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace,
+    monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #18181b;
+}
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+/* ── Scanline pulsing glow (the one animation) ──────────────────────────── */
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px #4ade80, 0 0 10px 2px #4ade8040;
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 2px 1px #4ade8060, 0 0 6px 1px #4ade8020;
+    opacity: 0.6;
+  }
+}
+
+.scanline-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* ── Fade-in for result panel ────────────────────────────────────────────── */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.35s ease-out forwards;
+}
+
+/* ── datetime-local colour fix (dark mode) ───────────────────────────────── */
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+}

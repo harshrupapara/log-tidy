@@ -1,0 +1,23 @@
+2026-07-08 12:00:01 INFO  ManagedPoolThread #1 54320001 12:00:01 INFO  Sitecore started. Version: 10.3.0
+2026-07-08 12:00:02 INFO  ManagedPoolThread #1 54320001 12:00:02 INFO  Loading site configuration from web.config
+2026-07-08 12:00:03 INFO  ManagedPoolThread #2 54320002 12:00:03 INFO  Publishing started for database master
+2026-07-08 12:00:04 INFO  ManagedPoolThread #2 54320002 12:00:04 INFO  Publish: item /sitecore/content/home published successfully
+2026-07-08 12:00:05 INFO  ManagedPoolThread #2 54320002 12:00:05 INFO  Publish: item /sitecore/content/about published successfully
+2026-07-08 12:00:06 INFO  ManagedPoolThread #2 54320002 12:00:06 INFO  Publish: item /sitecore/content/products published successfully
+2026-07-08 12:00:07 INFO  ManagedPoolThread #2 54320002 12:00:07 INFO  Publish: item /sitecore/content/contact published successfully
+2026-07-08 12:00:08 WARN  ManagedPoolThread #3 54320003 12:00:08 WARN  Item {b3f1a2c4-1234-5678-abcd-ef0123456789} is locked by user sitecore\admin, retrying in 3s
+2026-07-08 12:00:09 WARN  ManagedPoolThread #3 54320003 12:00:09 WARN  Item {c4d2b3e5-2345-6789-bcde-f01234567890} is locked by user sitecore\editor, retrying in 3s
+2026-07-08 12:00:10 ERROR ManagedPoolThread #4 54320004 12:00:10 ERROR Exception while publishing item /sitecore/content/news: NullReferenceException at Sitecore.Publishing.Pipeline.PublishItem.ProcessEntry.Process
+2026-07-08 12:00:11 INFO  ManagedPoolThread #2 54320002 12:00:11 INFO  Publish: item /sitecore/content/blog published successfully
+2026-07-08 12:00:12 INFO  ManagedPoolThread #2 54320002 12:00:12 INFO  Publish: item /sitecore/content/events published successfully
+2026-07-08 12:00:13 DEBUG ManagedPoolThread #5 54320005 12:00:13 DEBUG Cache hit: item {a1b2c3d4-abcd-1234-ef56-789012345678} retrieved from Sitecore.Caching.ItemCache
+2026-07-08 12:00:14 DEBUG ManagedPoolThread #5 54320005 12:00:14 DEBUG Cache hit: item {b2c3d4e5-bcde-2345-f067-890123456789} retrieved from Sitecore.Caching.ItemCache
+2026-07-08 12:00:15 DEBUG ManagedPoolThread #5 54320005 12:00:15 DEBUG Cache hit: item {c3d4e5f6-cdef-3456-0178-901234567890} retrieved from Sitecore.Caching.ItemCache
+2026-07-08 12:00:16 INFO  ManagedPoolThread #1 54320001 12:00:16 INFO  Site configuration reloaded: 3 sites registered
+2026-07-08 12:00:17 AUDIT ManagedPoolThread #6 54320006 12:00:17 AUDIT User sitecore\admin logged in from 192.168.1.45
+2026-07-08 12:00:18 INFO  ManagedPoolThread #2 54320002 12:00:18 INFO  Publish: item /sitecore/content/media/image1 published successfully
+2026-07-08 12:00:19 INFO  ManagedPoolThread #2 54320002 12:00:19 INFO  Publish: item /sitecore/content/media/image2 published successfully
+2026-07-08 12:00:20 WARN  ManagedPoolThread #3 54320003 12:00:20 WARN  Item {d5e6f7a8-3456-7890-cdef-012345678901} is locked by user sitecore\admin, retrying in 3s
+2026-07-08 12:00:21 INFO  ManagedPoolThread #2 54320002 12:00:21 INFO  Publish: item /sitecore/content/media/doc1 published successfully
+2026-07-08 12:00:22 ERROR ManagedPoolThread #4 54320004 12:00:22 ERROR Unhandled exception in pipeline PublishItem: System.IO.IOException: Disk quota exceeded
+2026-07-08 12:00:23 INFO  ManagedPoolThread #2 54320002 12:00:23 INFO  Publishing finished. 14 items processed, 2 errors

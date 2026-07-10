@@ -1,0 +1,16 @@
+2026-07-08T12:00:01Z Application starting up
+2026-07-08T12:00:02Z Loading configuration from /etc/app/config.yaml
+2026-07-08T12:00:03Z Database connection established to db-host-01:5432
+2026-07-08T12:00:04Z Worker thread pool initialized with 8 threads
+2026-07-08T12:00:05Z Processing job 1001 for user 42
+2026-07-08T12:00:06Z Job 1001 completed in 234ms
+2026-07-08T12:00:07Z Processing job 1002 for user 43
+2026-07-08T12:00:08Z Job 1002 completed in 198ms
+2026-07-08T12:00:09Z Processing job 1003 for user 44
+2026-07-08T12:00:10Z Job 1003 failed after 3 retries: connection timeout
+A line with no timestamp at all — raw text from a broken logger
+2026-07-08T12:00:11Z Processing job 1004 for user 45
+2026-07-08T12:00:12Z Job 1004 completed in 211ms
+2026-07-08T12:00:13Z Shutdown signal received
+2026-07-08T12:00:14Z Flushing 3 pending jobs before shutdown
+2026-07-08T12:00:15Z Shutdown complete

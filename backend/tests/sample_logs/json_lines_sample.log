@@ -1,0 +1,12 @@
+{"timestamp":"2026-07-08T12:00:01.123Z","level":"info","msg":"Server started on port 3000","pid":12345,"name":"app"}
+{"timestamp":"2026-07-08T12:00:02.456Z","level":"info","msg":"Connected to database","pid":12345,"name":"db"}
+{"timestamp":"2026-07-08T12:00:03.789Z","level":"debug","msg":"Cache initialized with 512MB","pid":12345,"name":"cache"}
+{"timestamp":"2026-07-08T12:00:04.012Z","level":"info","msg":"GET /api/health 200 5ms","pid":12345,"name":"http"}
+{"timestamp":"2026-07-08T12:00:05.345Z","level":"info","msg":"GET /api/health 200 4ms","pid":12345,"name":"http"}
+{"timestamp":"2026-07-08T12:00:06.678Z","level":"warn","msg":"Slow query detected: SELECT * FROM orders took 1204ms","pid":12345,"name":"db"}
+{"timestamp":"2026-07-08T12:00:07.901Z","level":"error","msg":"Unhandled promise rejection: TypeError: Cannot read property 'id' of undefined","pid":12345,"name":"app"}
+{"timestamp":"2026-07-08T12:00:08.234Z","level":"info","msg":"GET /api/health 200 5ms","pid":12345,"name":"http"}
+{"timestamp":"2026-07-08T12:00:09.567Z","level":"warn","msg":"Slow query detected: SELECT * FROM products took 980ms","pid":12345,"name":"db"}
+{"timestamp":"2026-07-08T12:00:10.890Z","level":"info","msg":"POST /api/orders 201 312ms","pid":12345,"name":"http"}
+{"timestamp":"2026-07-08T12:00:11.123Z","level":"info","msg":"GET /api/health 200 6ms","pid":12345,"name":"http"}
+{"timestamp":"2026-07-08T12:00:12.456Z","level":"error","msg":"Database connection lost: ECONNRESET","pid":12345,"name":"db"}
