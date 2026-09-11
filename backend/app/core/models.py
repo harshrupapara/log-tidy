@@ -68,6 +68,20 @@ class ClusterResult(BaseModel):
     occurrences_truncated: bool = False   # True when count > MAX_OCCURRENCES
 
 
+class SeverityCounts(BaseModel):
+    error: int = 0
+    warn: int = 0
+    info: int = 0
+    debug: int = 0
+    other: int = 0
+
+
+class TimeRange(BaseModel):
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
+    duration_str: Optional[str] = None
+
+
 class CompressionResponse(BaseModel):
     detected_format: str
     detection_confidence: float
@@ -75,11 +89,8 @@ class CompressionResponse(BaseModel):
     lines_in_window: int
     lines_excluded_no_timestamp: int
     clusters: list[ClusterResult]
-    # verbatim_events removed in Fix Pass 2.
-    # High-severity events are now surfaced by filtering `clusters` by level
-    # on the frontend (level in ERROR/FATAL/CRITICAL/AUDIT).  One entry per
-    # unique error signature with count, first_seen, last_seen and sample_raw
-    # — no more one-entry-per-occurrence flooding.
     tidy_text_summary: str
     no_date_warning: Optional[str] = None
+    severity_counts: Optional[SeverityCounts] = None
+    time_range: Optional[TimeRange] = None
 

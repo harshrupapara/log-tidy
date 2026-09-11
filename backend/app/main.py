@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.sitecore_routes import router as sitecore_router
 
 app = FastAPI(
     title="LogTidy",
@@ -26,6 +27,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(sitecore_router)  # Sitecore Cloud connector — removable
 
 
 @app.get("/health")

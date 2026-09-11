@@ -24,7 +24,14 @@ from typing import Optional
 from drain3 import TemplateMiner
 from drain3.template_miner_config import TemplateMinerConfig
 
-from app.core.models import ClusterResult, LogRecord, OccurrenceRecord, ParameterStats
+from app.core.models import (
+    ClusterResult,
+    LogRecord,
+    OccurrenceRecord,
+    ParameterStats,
+    SeverityCounts,
+    TimeRange,
+)
 
 # ── Severity constants ─────────────────────────────────────────────────────────
 
@@ -405,3 +412,55 @@ def build_tidy_text(
         lines.append("")
 
     return "\n".join(lines)
+
+
+def compute_scla_stats(
+    clusters: list[ClusterResult], records: list[LogRecord]
+) -> tuple[SeverityCounts, TimeRange]:
+    """Compute SCLA-style severity breakdown and time window analytics."""
+    error_count = sum(
+        c.count for c in clusters if (c.level or "").upper() in ("ERROR", "CRITICAL", "FATAL", "AUDIT")
+    )
+    warn_count = sum(
+        c.count for c in clusters if (c.level or "").upper() in ("WARN", "WARNING")
+    )
+    info_count = sum(
+        c.count for c in clusters if (c.level or "").upper() == "INFO"
+    )
+    debug_count = sum(
+        c.count for c in clusters if (c.level or "").upper() == "DEBUG"
+    )
+    other_count = sum(
+        c.count
+        for c in clusters
+        if (c.level or "").upper()
+        not in ("ERROR", "CRITICAL", "FATAL", "AUDIT", "WARN", "WARNING", "INFO", "DEBUG")
+    )
+
+    counts = SeverityCounts(
+        error=error_count,
+        warn=warn_count,
+        info=info_count,
+        debug=debug_count,
+        other=other_count,
+    )
+
+    timestamps = [r.timestamp for r in records if r.timestamp is not None]
+    if timestamps:
+        start_ts = min(timestamps)
+        end_ts = max(timestamps)
+        diff_sec = max(0, int((end_ts - start_ts).total_seconds()))
+        if diff_sec < 60:
+            duration_str = f"{diff_sec}s"
+        elif diff_sec < 3600:
+            duration_str = f"{diff_sec // 60}m {diff_sec % 60}s"
+        else:
+            h = diff_sec // 3600
+            m = (diff_sec % 3600) // 60
+            duration_str = f"{h}h {m}m"
+        tr = TimeRange(start=start_ts, end=end_ts, duration_str=duration_str)
+    else:
+        tr = TimeRange()
+
+    return counts, tr
+

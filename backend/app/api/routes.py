@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.core.compressor import build_tidy_text, compress
+from app.core.compressor import build_tidy_text, compress, compute_scla_stats
 from app.core.level_scanner import apply_level_scan
 from app.core.models import CompressionResponse
 from app.core.stitcher import stitch_lines
@@ -149,6 +149,8 @@ async def compress_logs(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Compression error: {exc}")
 
+    severity_counts, time_range = compute_scla_stats(clusters, records_to_compress)
+
     # ── Build tidy text ───────────────────────────────────────────────────────
     tidy = build_tidy_text(
         detected_format=parser.name,
@@ -168,5 +170,7 @@ async def compress_logs(
         clusters=clusters,
         tidy_text_summary=tidy,
         no_date_warning=no_date_warning,
+        severity_counts=severity_counts,
+        time_range=time_range,
     )
 

@@ -10,10 +10,20 @@ import {
 import {
   compressLogs,
   getFormats,
+  startSitecoreAuth,
+  pollSitecoreAuth,
+  disconnectSitecore,
+  checkSitecoreSession,
+  getSitecoreEnvironments,
+  getSiteCoreLogs,
+  fetchAndCompressSitecoreLog,
   type CompressionResponse,
   type ClusterResult,
   type ParameterStats,
   type OccurrenceRecord,
+  type SitecoreEnvironment,
+  type SitecoreLogFile,
+  type SitecoreOrgInfo,
 } from "./api-client";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -30,6 +40,15 @@ const SIDEBAR_W      = 264; // px — matches w-66 below
 type SortKey     = "count" | "first_seen";
 type LevelFilter = "all" | "error" | "warn" | "info";
 
+interface SitecoreMeta {
+  orgName?: string;
+  orgId?: string;
+  projectName?: string;
+  envName?: string;
+  envId?: string;
+  logName?: string;
+}
+
 interface SessionEntry {
   id: string;
   label: string;        // filename or "pasted text"
@@ -37,6 +56,7 @@ interface SessionEntry {
   format: string;
   ratio: number;
   result: CompressionResponse;
+  sitecoreMeta?: SitecoreMeta;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -207,16 +227,116 @@ function LevelBadge({ level }: { level: string | null }) {
   );
 }
 
-// ── StatCard ──────────────────────────────────────────────────────────────────
+// ── SCLA Severity & Stat Card ─────────────────────────────────────────────────
 
-function StatCard({ label, value, accent, sub }: {
-  label: string; value: string | number; accent?: string; sub?: React.ReactNode;
+function SCLACard({
+  label,
+  value,
+  sub,
+  accent,
+  borderClass,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: string | number;
+  sub?: React.ReactNode;
+  accent?: string;
+  borderClass?: string;
+  active?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-0.5 px-4 py-3 rounded-lg bg-zinc-900 border border-zinc-800">
-      <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-mono">{label}</span>
-      <span className={`text-xl font-mono font-bold ${accent ?? "text-zinc-100"}`}>{value}</span>
-      {sub && <div className="mt-0.5">{sub}</div>}
+    <div
+      onClick={onClick}
+      className={`flex flex-col justify-between p-3.5 rounded-xl border transition-all ${
+        onClick ? "cursor-pointer hover:scale-[1.01]" : ""
+      } ${
+        active
+          ? `${borderClass ?? "border-zinc-500"} bg-zinc-900/90 shadow-lg ring-1 ring-white/10`
+          : "border-zinc-800/80 bg-zinc-900/40 hover:border-zinc-700"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-1">
+        <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-mono font-medium">{label}</span>
+        {active && <span className="w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" />}
+      </div>
+      <div className="my-1">
+        <span className={`text-2xl font-mono font-bold tracking-tight ${accent ?? "text-zinc-100"}`}>
+          {value}
+        </span>
+      </div>
+      {sub && <div className="text-[11px] font-mono text-zinc-500">{sub}</div>}
+    </div>
+  );
+}
+
+// ── HotSpotCard ──────────────────────────────────────────────────────────────
+
+function HotSpotCard({
+  cluster,
+  rank,
+  onView,
+}: {
+  cluster: ClusterResult;
+  rank: number;
+  onView: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const cleanSample = cluster.sample_raw ? cluster.sample_raw.trim() : cluster.template;
+    const text = [
+      `### Sitecore Issue Report (Top #${rank})`,
+      `- **Severity:** ${cluster.level ?? "ERROR"}`,
+      `- **Occurrences:** ${cluster.count.toLocaleString()}`,
+      `- **First Seen:** ${formatTs(cluster.first_seen)}`,
+      `- **Last Seen:** ${formatTs(cluster.last_seen)}`,
+      `- **Pattern:** \`${cluster.template}\``,
+      "",
+      "```",
+      cleanSample,
+      "```",
+    ].join("\n");
+
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div
+      onClick={onView}
+      className="group relative rounded-xl border border-red-500/25 bg-red-950/10 hover:bg-red-950/20 p-4 transition-all hover:border-red-500/50 cursor-pointer"
+    >
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="flex items-center justify-center w-5 h-5 rounded-full bg-red-500/20 text-red-400 font-mono text-[10px] font-bold">
+            #{rank}
+          </span>
+          <LevelBadge level={cluster.level} />
+          <span className="text-red-400 font-mono font-bold text-sm">
+            ×{cluster.count.toLocaleString()} occurrences
+          </span>
+          <span className="text-zinc-600 text-[10px] font-mono">
+            ({formatTs(cluster.first_seen, true)} → {formatTs(cluster.last_seen, true)})
+          </span>
+        </div>
+
+        <button
+          onClick={handleCopy}
+          className="text-left sm:text-right font-mono text-xs text-zinc-400 hover:text-green-400 hover:drop-shadow-[0_0_8px_rgba(74,222,128,0.5)] transition-all cursor-pointer shrink-0"
+          title="Copy markdown formatted summary for Jira, GitHub, or AI prompts"
+        >
+          {copied ? "[ ✓ copied to clipboard ]" : "[ copy for ticket / AI ]"}
+        </button>
+      </div>
+
+      <p className="font-mono text-xs text-zinc-300 line-clamp-2 break-all group-hover:text-zinc-100 transition-colors">
+        {cluster.sample_raw ? cluster.sample_raw.split("\n")[0] : cluster.template}
+      </p>
     </div>
   );
 }
@@ -235,13 +355,13 @@ function CopyBtn({ label, getText }: { label: string; getText: () => string }) {
   return (
     <button
       onClick={handle}
-      className={`px-2 py-0.5 rounded border text-[10px] font-mono transition-colors ${
+      className={`font-mono text-xs transition-all cursor-pointer ${
         flash
-          ? "border-green-500/40 text-green-400 bg-green-500/10"
-          : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+          ? "text-green-400 drop-shadow-[0_0_8px_rgba(74,222,128,0.5)] font-bold"
+          : "text-zinc-500 hover:text-green-400 hover:drop-shadow-[0_0_8px_rgba(74,222,128,0.5)]"
       }`}
     >
-      {flash ? "✓ copied" : label}
+      {flash ? "[ ✓ copied ]" : `[ ${label} ]`}
     </button>
   );
 }
@@ -349,6 +469,7 @@ function ClusterCard({
 
   return (
     <div
+      id={`cluster-${cluster.cluster_id}`}
       className={`rounded-lg border cursor-pointer transition-colors select-none ${
         isHighSev ? color : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700"
       }`}
@@ -652,9 +773,616 @@ function PaginationBar({ page, totalPages, total, onPrev, onNext }: {
   );
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Parse Sitecore log filename into human-readable parts.
+ *  Handles formats like:
+ *    Log.6k5m8.20260722.083023.txt
+ *    Client.log.6k5m8.20260722.083024.txt
+ *    ContentTransfer.log.6k5m8.20260722.083024.txt
+ */
+function parseLogName(name: string): { type: string; date: string; time: string; raw: string } {
+  const base = name.replace(/\.txt$/i, "");
+  const parts = base.split(".");
+  // Find 8-digit date part (YYYYMMDD)
+  const dateIdx = parts.findIndex((p) => /^\d{8}$/.test(p));
+  if (dateIdx >= 1) {
+    const d = parts[dateIdx];
+    const t = parts[dateIdx + 1] ?? "";
+    // Type = everything before the instanceId (dateIdx - 1 is instanceId)
+    const typeParts = parts.slice(0, Math.max(1, dateIdx - 1)).filter((p) => p.toLowerCase() !== "log" || dateIdx <= 2);
+    const type = typeParts.join(".") || parts[0];
+    const date = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    const time = t.length === 6 ? `${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}` : t;
+    return { type, date, time, raw: name };
+  }
+  return { type: name, date: "", time: "", raw: name };
+}
+
+function formatBytes(bytes: number | null): string {
+  if (!bytes) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ── SitecoreConnectorPanel ────────────────────────────────────────────────────
+// Always mounted (parent uses CSS hide/show). State survives tab switches.
+
+type SCPhase = "idle" | "auth_pending" | "authenticated" | "no_access" | "env_selected" | "log_selected" | "fetching";
+
+interface SCState {
+  phase: SCPhase;
+  sessionId?: string;
+  deviceCode?: string;
+  userCode?: string;
+  verificationUri?: string;
+  interval?: number;
+  environmentId?: string;
+  environmentName?: string;
+  logName?: string;
+}
+
+function SitecoreConnectorPanel({
+  onResult,
+  startTime,
+  endTime,
+  formatOverride,
+}: {
+  onResult: (res: CompressionResponse, label: string, meta?: SitecoreMeta) => void;
+  startTime: string;
+  endTime: string;
+  formatOverride: string;
+}) {
+  const [sc, setSc] = useState<SCState>({ phase: "idle" });
+  const [error, setError] = useState<string | null>(null);
+  const [orgInfo, setOrgInfo] = useState<SitecoreOrgInfo | null>(null);
+  const [environments, setEnvironments] = useState<SitecoreEnvironment[]>([]);
+  const [logs, setLogs] = useState<SitecoreLogFile[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [logSearch, setLogSearch] = useState("");
+  const [selectedEnvId, setSelectedEnvId] = useState("");
+  const [selectedLog, setSelectedLog] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Restore saved session on mount
+  useEffect(() => {
+    const savedSessionId = localStorage.getItem("logtidy_sc_session_id");
+    const savedEnvId = localStorage.getItem("logtidy_sc_env_id");
+    const savedOrgName = localStorage.getItem("logtidy_sc_org_name");
+    const savedOrgId = localStorage.getItem("logtidy_sc_org_id");
+
+    if (savedOrgName || savedOrgId) {
+      setOrgInfo({ id: savedOrgId || "", name: savedOrgName || savedOrgId || "" });
+    }
+
+    if (savedSessionId) {
+      setSc({ phase: "authenticated", sessionId: savedSessionId });
+      getSitecoreEnvironments(savedSessionId)
+        .then((res) => {
+          setEnvironments(res.environments);
+          if (res.organization?.name || res.organization?.id) {
+            setOrgInfo(res.organization);
+            localStorage.setItem("logtidy_sc_org_name", res.organization.name || "");
+            localStorage.setItem("logtidy_sc_org_id", res.organization.id || "");
+          }
+          if (savedEnvId && res.environments.some((e) => e.id === savedEnvId)) {
+            setSelectedEnvId(savedEnvId);
+            setLoadingLogs(true);
+            getSiteCoreLogs(savedSessionId, savedEnvId)
+              .then((files) => {
+                setLogs(files);
+                const env = res.environments.find((e) => e.id === savedEnvId);
+                setSc({
+                  phase: "env_selected",
+                  sessionId: savedSessionId,
+                  environmentId: savedEnvId,
+                  environmentName: env?.name ?? savedEnvId,
+                });
+              })
+              .catch(() => {})
+              .finally(() => setLoadingLogs(false));
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem("logtidy_sc_session_id");
+          localStorage.removeItem("logtidy_sc_org_name");
+          localStorage.removeItem("logtidy_sc_org_id");
+          localStorage.removeItem("logtidy_sc_env_id");
+          setSc({ phase: "idle" });
+        });
+    }
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  const handleConnect = useCallback(async () => {
+    setError(null);
+    try {
+      const data = await startSitecoreAuth();
+      setSc({
+        phase: "auth_pending",
+        sessionId: data.session_id,
+        deviceCode: data.device_code,
+        userCode: data.user_code,
+        verificationUri: data.verification_uri,
+        interval: data.interval,
+      });
+
+      // Auto-open the auth URL — user doesn't have to do anything manually
+      window.open(data.verification_uri, "_blank", "noopener,noreferrer");
+
+      const intervalMs = (data.interval + 1) * 1000;
+      pollRef.current = setInterval(async () => {
+        try {
+          const poll = await pollSitecoreAuth(data.session_id, data.device_code);
+          if (poll.status === "ok") {
+            clearInterval(pollRef.current!);
+            localStorage.setItem("logtidy_sc_session_id", data.session_id);
+            try {
+              const res = await getSitecoreEnvironments(data.session_id);
+              setEnvironments(res.environments);
+              if (res.organization?.name || res.organization?.id) {
+                setOrgInfo(res.organization);
+                localStorage.setItem("logtidy_sc_org_name", res.organization.name || "");
+                localStorage.setItem("logtidy_sc_org_id", res.organization.id || "");
+              }
+              setSc({ phase: "authenticated", sessionId: data.session_id });
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : "Failed to load environments";
+              const is403 = msg.includes("403") || msg.toLowerCase().includes("permission") || msg.toLowerCase().includes("access");
+              if (is403) {
+                setSc({ phase: "no_access", sessionId: data.session_id });
+              } else {
+                setError(msg);
+                setSc({ phase: "idle" });
+              }
+            }
+          } else if (poll.status === "expired") {
+            clearInterval(pollRef.current!);
+            setError("Login window expired. Click Connect to try again.");
+            setSc({ phase: "idle" });
+          }
+        } catch (e: unknown) {
+          clearInterval(pollRef.current!);
+          setError(e instanceof Error ? e.message : "Polling error");
+          setSc({ phase: "idle" });
+        }
+      }, intervalMs);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to start authentication");
+    }
+  }, []);
+
+  const handleDisconnect = useCallback(() => {
+    if (sc.sessionId) disconnectSitecore(sc.sessionId).catch(() => {});
+    if (pollRef.current) clearInterval(pollRef.current);
+    localStorage.removeItem("logtidy_sc_session_id");
+    localStorage.removeItem("logtidy_sc_org_name");
+    localStorage.removeItem("logtidy_sc_org_id");
+    localStorage.removeItem("logtidy_sc_env_id");
+    setSc({ phase: "idle" });
+    setOrgInfo(null);
+    setEnvironments([]);
+    setLogs([]);
+    setSelectedEnvId("");
+    setSelectedLog("");
+    setError(null);
+  }, [sc.sessionId]);
+
+  const handleEnvChange = useCallback(async (envId: string) => {
+    setSelectedEnvId(envId);
+    setSelectedLog("");
+    setLogs([]);
+    setLogSearch("");
+    if (!envId || !sc.sessionId) {
+      localStorage.removeItem("logtidy_sc_env_id");
+      return;
+    }
+    localStorage.setItem("logtidy_sc_env_id", envId);
+    setError(null);
+    setLoadingLogs(true);
+    try {
+      const logFiles = await getSiteCoreLogs(sc.sessionId, envId);
+      setLogs(logFiles);
+      const env = environments.find((e) => e.id === envId);
+      setSc((s) => ({
+        ...s,
+        phase: "env_selected",
+        environmentId: envId,
+        environmentName: env?.name ?? envId,
+      }));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to load logs";
+      const is403 = msg.includes("403") || msg.toLowerCase().includes("permission");
+      setError(is403 ? "You don't have permission to view logs for this environment." : msg);
+    } finally {
+      setLoadingLogs(false);
+    }
+  }, [sc.sessionId, environments]);
+
+  const handleLogSelect = useCallback((logName: string) => {
+    setSelectedLog(logName);
+    setSc((s) => ({ ...s, phase: "log_selected", logName }));
+  }, []);
+
+  const handleFetch = useCallback(async () => {
+    if (sc.phase !== "log_selected" || !sc.sessionId || !sc.environmentId || !sc.logName) return;
+    const { sessionId, environmentId, logName } = sc;
+    setSc((s) => ({ ...s, phase: "fetching" }));
+    setError(null);
+    try {
+      const res = await fetchAndCompressSitecoreLog(
+        sessionId, environmentId, logName,
+        startTime || null, endTime || null, formatOverride || null,
+      );
+      const env = environments.find((e) => e.id === environmentId);
+      onResult(res, logName, {
+        orgName: orgInfo?.name,
+        orgId: orgInfo?.id,
+        projectName: env?.projectName,
+        envName: env?.name,
+        envId: environmentId,
+        logName,
+      });
+      setSc((s) => ({ ...s, phase: "log_selected" }));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to fetch log");
+      setSc((s) => ({ ...s, phase: "log_selected" }));
+    }
+  }, [sc, startTime, endTime, formatOverride, onResult, environments, orgInfo]);
+
+  // Group environments by project for XM Cloud dashboard card layout
+  const projects = useMemo(() => {
+    const map = new Map<string, SitecoreEnvironment[]>();
+    for (const env of environments) {
+      const p = env.projectName || "Default Project";
+      if (!map.has(p)) map.set(p, []);
+      map.get(p)!.push(env);
+    }
+    return Array.from(map.entries()).map(([projectName, envs]) => ({ projectName, envs }));
+  }, [environments]);
+
+  const filteredLogs = useMemo(() => {
+    if (!logSearch.trim()) return logs;
+    const q = logSearch.toLowerCase();
+    return logs.filter((l) => l.name.toLowerCase().includes(q) || l.type.toLowerCase().includes(q));
+  }, [logs, logSearch]);
+
+  const { phase } = sc;
+  const isConnected = !["idle", "auth_pending", "no_access"].includes(phase);
+
+  return (
+    <div className="space-y-5">
+
+      {/* ── Idle: connect button */}
+      {phase === "idle" && (
+        <button
+          id="sc-connect-btn"
+          onClick={handleConnect}
+          className="w-full py-3.5 rounded-xl border border-zinc-700/60 bg-zinc-900/60 text-zinc-300 font-mono text-sm hover:border-green-500/40 hover:bg-zinc-800/60 hover:text-green-400 transition-all duration-200 cursor-pointer"
+        >
+          Connect to Sitecore Cloud →
+        </button>
+      )}
+
+      {/* ── Auth pending: code display */}
+      {phase === "auth_pending" && sc.userCode && (
+        <div className="rounded-xl border border-zinc-700/60 bg-zinc-900/40 overflow-hidden">
+          <div className="px-5 pt-5 pb-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-zinc-500">Sitecore Cloud — Sign in</span>
+              <span className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-600">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse inline-block" />
+                waiting for login
+              </span>
+            </div>
+
+            {/* The code */}
+            <div className="flex items-center justify-center py-5">
+              <span className="font-mono text-4xl font-bold tracking-[0.25em] text-white tabular-nums select-all">
+                {sc.userCode}
+              </span>
+            </div>
+
+            <p className="text-[11px] font-mono text-zinc-500 text-center leading-relaxed">
+              A browser window opened — enter this code to complete sign in.<br />
+              <span className="text-zinc-600">Nothing opened?{" "}
+                <button
+                  onClick={() => window.open(sc.verificationUri, "_blank", "noopener,noreferrer")}
+                  className="text-cyan-500 hover:text-cyan-400 underline transition-colors cursor-pointer"
+                >
+                  Open manually
+                </button>
+              </span>
+            </p>
+          </div>
+
+          <div className="border-t border-zinc-800 px-5 py-3 flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <span className="inline-block w-3 h-3 border-2 border-zinc-700 border-t-green-400 rounded-full animate-spin" />
+              <span className="text-[10px] font-mono text-zinc-600">polling for confirmation…</span>
+            </div>
+            <button
+              onClick={handleDisconnect}
+              className="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+            >
+              cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── No access state */}
+      {phase === "no_access" && (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-5 space-y-3">
+          <div className="flex items-start gap-3">
+            <span className="text-amber-400 text-lg mt-0.5">⚠</span>
+            <div className="space-y-1">
+              <p className="text-sm font-mono text-amber-300 font-medium">Insufficient permissions</p>
+              <p className="text-[11px] font-mono text-zinc-500 leading-relaxed">
+                Your account is authenticated but doesn't have the role required to access XM Cloud environments or logs.
+                Contact your Sitecore org admin to request access.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleDisconnect}
+            className="text-[10px] font-mono text-red-400/80 hover:text-red-300 hover:drop-shadow-[0_0_8px_rgba(239,68,68,0.5)] transition-all cursor-pointer"
+          >
+            ← disconnect and try a different account
+          </button>
+        </div>
+      )}
+
+      {/* ── Connected State */}
+      {isConnected && (
+        <div className="space-y-4">
+          {/* Status bar with Org display and glowing red Disconnect button */}
+          <div className="flex items-center justify-between gap-3 pb-2 border-b border-zinc-800/80">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block shadow-[0_0_6px_#34d399] shrink-0" />
+              <span className="text-xs font-mono text-emerald-400 font-bold shrink-0">
+                Connected to Sitecore Cloud
+              </span>
+              {orgInfo?.name && (
+                <span className="text-xs font-mono text-zinc-400 truncate">
+                  — <span className="font-semibold text-zinc-200">{orgInfo.name}</span>
+                </span>
+              )}
+            </div>
+            <button
+              id="sc-disconnect-btn"
+              onClick={handleDisconnect}
+              className="text-[10px] font-mono text-red-500/80 hover:text-red-400 hover:drop-shadow-[0_0_8px_rgba(239,68,68,0.5)] transition-all cursor-pointer shrink-0"
+              title="Disconnect from Sitecore Cloud"
+            >
+              disconnect
+            </button>
+          </div>
+
+          {/* XM Cloud-style Project & Environment Cards */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-500">
+                Environments ({environments.length})
+              </label>
+              {selectedEnvId && (
+                <button
+                  onClick={() => {
+                    setSelectedEnvId("");
+                    setSelectedLog("");
+                    setLogs([]);
+                    localStorage.removeItem("logtidy_sc_env_id");
+                  }}
+                  className="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                >
+                  clear selection
+                </button>
+              )}
+            </div>
+
+            {environments.length === 0 ? (
+              <p className="text-xs font-mono text-zinc-600 py-3">No environments found for this account.</p>
+            ) : (
+              <div className="space-y-4">
+                {projects.map(({ projectName, envs }) => (
+                  <div key={projectName} className="space-y-2">
+                    <div className="flex items-center gap-2 px-0.5">
+                      <span className="text-zinc-500 text-xs">📁</span>
+                      <span className="text-xs font-mono font-medium text-zinc-300">{projectName}</span>
+                      <span className="text-[10px] font-mono text-zinc-600">
+                        ({envs.length} {envs.length === 1 ? "env" : "envs"})
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                      {envs.map((env) => {
+                        const isSelected = selectedEnvId === env.id;
+                        const isProd = env.isProduction || env.target?.toLowerCase() === "production" || env.name.toLowerCase().includes("prod");
+                        return (
+                          <button
+                            key={env.id}
+                            type="button"
+                            onClick={() => handleEnvChange(env.id)}
+                            className={`text-left p-3.5 rounded-xl border transition-all duration-150 flex flex-col justify-between gap-3 group cursor-pointer ${
+                              isSelected
+                                ? "bg-green-500/8 border-green-500/50 ring-1 ring-green-500/30 shadow-[0_0_15px_rgba(34,197,94,0.08)]"
+                                : "bg-zinc-900/60 border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/90"
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2 w-full">
+                              <div className="min-w-0">
+                                <div className={`text-xs font-mono font-bold truncate ${isSelected ? "text-zinc-100" : "text-zinc-300 group-hover:text-white"}`}>
+                                  {env.name}
+                                </div>
+                                {env.branch && (
+                                  <div className="text-[10px] font-mono text-zinc-500 truncate flex items-center gap-1 mt-0.5">
+                                    <span className="text-zinc-600">⎇</span> {env.branch}
+                                  </div>
+                                )}
+                              </div>
+                              <span className={`shrink-0 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border font-bold ${
+                                isProd
+                                  ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
+                                  : "text-zinc-400 bg-zinc-800/80 border-zinc-700/60"
+                              }`}>
+                                {isProd ? "PROD" : "NON-PROD"}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-2 w-full pt-1.5 border-t border-zinc-800/50 text-[10px] font-mono">
+                              <span className="flex items-center gap-1.5 text-zinc-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block shadow-[0_0_4px_#34d399]" />
+                                {env.provisioningStatus || "Ready"}
+                              </span>
+                              {env.zone && (
+                                <span className="text-[9px] text-zinc-600 truncate">{env.zone}</span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Log file list with search filter */}
+          {selectedEnvId && (
+            <div className="space-y-2 pt-2 border-t border-zinc-800/60">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-[10px] font-mono uppercase tracking-[0.12em] text-zinc-500">
+                  Log files
+                  <span className="ml-1 text-zinc-400 font-semibold">
+                    ({environments.find(e => e.id === selectedEnvId)?.name})
+                  </span>
+                  <span className="ml-2 text-zinc-600">
+                    {filteredLogs.length} {filteredLogs.length !== logs.length ? `of ${logs.length}` : ""}
+                  </span>
+                </label>
+                {logs.length > 4 && (
+                  <input
+                    type="text"
+                    value={logSearch}
+                    onChange={(e) => setLogSearch(e.target.value)}
+                    placeholder="Filter logs…"
+                    className="bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1 text-[11px] font-mono text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-green-500/40 w-44"
+                  />
+                )}
+              </div>
+
+              {loadingLogs ? (
+                <div className="py-8 flex items-center justify-center gap-2 text-xs font-mono text-zinc-500">
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-zinc-700 border-t-green-400 rounded-full animate-spin" />
+                  Loading logs from Sitecore Cloud…
+                </div>
+              ) : logs.length === 0 ? (
+                <p className="text-xs font-mono text-zinc-600 py-4">No log files available for this environment.</p>
+              ) : filteredLogs.length === 0 ? (
+                <p className="text-xs font-mono text-zinc-600 py-4">No logs matching "{logSearch}".</p>
+              ) : (
+                <div className="rounded-lg border border-zinc-800 divide-y divide-zinc-800/60 max-h-64 overflow-y-auto">
+                  {filteredLogs.map((log) => {
+                    const parsed = parseLogName(log.name);
+                    const isSelected = selectedLog === log.name;
+                    return (
+                      <button
+                        key={log.name}
+                        type="button"
+                        onClick={() => handleLogSelect(log.name)}
+                        className={`w-full text-left px-3 py-2.5 flex items-center justify-between gap-3 transition-colors group cursor-pointer ${
+                          isSelected
+                            ? "bg-green-500/10 border-l-2 border-l-green-500"
+                            : "hover:bg-zinc-800/40"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {/* Type badge */}
+                          <span className={`shrink-0 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                            isSelected
+                              ? "border-green-500/40 text-green-400 bg-green-500/10"
+                              : "border-zinc-700 text-zinc-500 bg-zinc-900"
+                          }`}>
+                            {parsed.type}
+                          </span>
+                          {/* Date + time */}
+                          <div className="min-w-0">
+                            {parsed.date ? (
+                              <div className="flex items-center gap-2">
+                                <span className={`text-xs font-mono ${isSelected ? "text-zinc-200 font-bold" : "text-zinc-400"}`}>
+                                  {parsed.date}
+                                </span>
+                                <span className="text-[10px] font-mono text-zinc-600">{parsed.time}</span>
+                              </div>
+                            ) : (
+                              <span className="text-xs font-mono text-zinc-400 truncate">{log.name}</span>
+                            )}
+                          </div>
+                        </div>
+                        {/* Size */}
+                        <span className="shrink-0 text-[10px] font-mono text-zinc-600">
+                          {formatBytes(log.size)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/8 px-4 py-3 text-xs font-mono text-red-400 leading-relaxed">
+          {error}
+        </div>
+      )}
+
+      {/* Compress button */}
+      {phase === "log_selected" && (
+        <button
+          id="sc-compress-btn"
+          onClick={handleFetch}
+          className="w-full py-3.5 rounded-xl bg-green-500 hover:bg-green-400 text-zinc-950 font-mono font-bold text-sm tracking-wider transition-all duration-200 active:scale-[0.99] cursor-pointer"
+        >
+          [ compress ]
+        </button>
+      )}
+      {phase === "fetching" && (
+        <button disabled className="w-full py-3.5 rounded-xl bg-zinc-800 text-zinc-600 font-mono font-bold text-sm tracking-wider cursor-not-allowed">
+          <span className="flex items-center justify-center gap-2.5">
+            <span className="inline-block w-4 h-4 border-2 border-zinc-700 border-t-green-400 rounded-full animate-spin" />
+            fetching log…
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+
+
+
+
+
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
+
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
+  // ── Source picker ─────────────────────────────────────────────────────────
+  const [source, setSource] = useState<"paste" | "sitecore">("paste");
+
   // ── Input ────────────────────────────────────────────────────────────────
   const [logText, setLogText]           = useState("");
   const [file, setFile]                 = useState<File | null>(null);
@@ -672,6 +1400,7 @@ export default function Home() {
   // ── Session history ───────────────────────────────────────────────────────
   const [history, setHistory]             = useState<SessionEntry[]>([]);
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
+  const [activeSitecoreMeta, setActiveSitecoreMeta] = useState<SitecoreMeta | null>(null);
 
   // ── Results view ──────────────────────────────────────────────────────────
   const [sortKey, setSortKey]         = useState<SortKey>("count");
@@ -771,13 +1500,53 @@ export default function Home() {
     return { total, high, warn, info: total - high - warn };
   }, [result]);
 
-  const ratio = result ? compressionPct(result.lines_in_window, result.clusters.length) : 0;
-
-  // Whether to show the format warning banner
-  const showFormatWarning = result && (
-    result.detected_format === "generic_fallback" ||
-    result.detection_confidence < 0.7
+  const errorClusters = useMemo(
+    () => result?.clusters.filter((c) => HIGH_SEVERITY.has(c.level ?? "")) ?? [],
+    [result]
   );
+  const warnClusters = useMemo(
+    () => result?.clusters.filter((c) => WARN_LEVELS.has(c.level ?? "")) ?? [],
+    [result]
+  );
+  const infoClusters = useMemo(
+    () => result?.clusters.filter((c) => !HIGH_SEVERITY.has(c.level ?? "") && !WARN_LEVELS.has(c.level ?? "")) ?? [],
+    [result]
+  );
+
+  const sclaCounts = useMemo(() => {
+    if (!result) return { error: 0, warn: 0, info: 0, debug: 0, total: 0 };
+    if (result.severity_counts) {
+      return {
+        error: result.severity_counts.error,
+        warn: result.severity_counts.warn,
+        info: result.severity_counts.info,
+        debug: result.severity_counts.debug,
+        total: result.lines_in_window,
+      };
+    }
+    let error = 0;
+    let warn = 0;
+    let info = 0;
+    let debug = 0;
+    for (const c of result.clusters) {
+      const lvl = (c.level ?? "").toUpperCase();
+      if (HIGH_SEVERITY.has(lvl)) error += c.count;
+      else if (WARN_LEVELS.has(lvl)) warn += c.count;
+      else if (lvl === "DEBUG") debug += c.count;
+      else info += c.count;
+    }
+    return { error, warn, info, debug, total: result.lines_in_window };
+  }, [result]);
+
+  const topHotSpots = useMemo(() => {
+    if (!result) return [];
+    const sortedErrors = [...errorClusters].sort((a, b) => b.count - a.count);
+    if (sortedErrors.length > 0) return sortedErrors.slice(0, 3);
+    const sortedWarn = [...warnClusters].sort((a, b) => b.count - a.count);
+    return sortedWarn.slice(0, 3);
+  }, [result, errorClusters, warnClusters]);
+
+  const ratio = result ? compressionPct(result.lines_in_window, result.clusters.length) : 0;
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -853,6 +1622,10 @@ export default function Home() {
   const restoreHistory = useCallback((entry: SessionEntry) => {
     setResult(entry.result);
     setActiveHistoryId(entry.id);
+    setActiveSitecoreMeta(entry.sitecoreMeta ?? null);
+    if (entry.sitecoreMeta) {
+      setSource("sitecore");
+    }
   }, []);
 
   // ── Content margin — shift right when sidebar is open ─────────────────────
@@ -941,9 +1714,61 @@ export default function Home() {
       <div className="flex-1 flex flex-col transition-all duration-200" style={contentStyle}>
         <main className="flex-1 mx-auto w-full max-w-4xl px-4 py-8 space-y-6">
 
-          {/* ── Input panel ─────────────────────────────────────────── */}
-          {!result && (
-            <div className="space-y-4">
+          {/* ── Input panel (remains mounted to preserve active Sitecore state) ── */}
+          <div className={result ? "hidden" : "space-y-4"}>
+
+              {/* Source picker tabs */}
+              <div className="flex gap-1 p-1 rounded-lg bg-zinc-900 border border-zinc-800">
+                <button
+                  id="source-paste-btn"
+                  onClick={() => setSource("paste")}
+                  className={`flex-1 py-1.5 rounded-md font-mono text-xs transition-colors ${
+                    source === "paste"
+                      ? "bg-zinc-800 text-zinc-100 border border-zinc-700"
+                      : "text-zinc-600 hover:text-zinc-400"
+                  }`}
+                >
+                  paste / upload
+                </button>
+                <button
+                  id="source-sitecore-btn"
+                  onClick={() => setSource("sitecore")}
+                  className={`flex-1 py-1.5 rounded-md font-mono text-xs transition-colors ${
+                    source === "sitecore"
+                      ? "bg-zinc-800 text-zinc-100 border border-zinc-700"
+                      : "text-zinc-600 hover:text-zinc-400"
+                  }`}
+                >
+                  sitecore cloud
+                </button>
+              </div>
+
+              {/* Sitecore connector panel — always mounted, CSS hidden when not active so state survives tab switch */}
+              <div className={source !== "sitecore" ? "hidden" : ""}>
+                <SitecoreConnectorPanel
+                  onResult={(res, label, meta) => {
+                    setResult(res);
+                    setActiveSitecoreMeta(meta ?? null);
+                    const entry: SessionEntry = {
+                      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                      label,
+                      ts: Date.now(),
+                      format: res.detected_format,
+                      ratio: compressionPct(res.lines_in_window, res.clusters.length),
+                      result: res,
+                      sitecoreMeta: meta,
+                    };
+                    setHistory((prev) => [entry, ...prev].slice(0, MAX_HISTORY));
+                    setActiveHistoryId(entry.id);
+                  }}
+                  startTime={startTime}
+                  endTime={endTime}
+                  formatOverride={formatOverride}
+                />
+              </div>
+
+              {/* Paste / upload panel */}
+              {source === "paste" && (<>
               <div className="space-y-2">
                 <label className="text-[11px] font-mono uppercase tracking-widest text-zinc-500">
                   Paste logs
@@ -975,27 +1800,6 @@ export default function Home() {
                     ? <span className="text-green-400">✓ {file.name} ({(file.size / 1024).toFixed(1)} KB)</span>
                     : "click to upload .log / .json / .txt"}
                 </button>
-
-                {/* Format override */}
-                <div className="flex items-center gap-3">
-                  <label className="text-[10px] font-mono uppercase tracking-widest text-zinc-600 shrink-0">
-                    Parser
-                  </label>
-                  <select
-                    id="format-override"
-                    value={formatOverride}
-                    onChange={(e) => setFormatOverride(e.target.value)}
-                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/20 transition-colors appearance-none cursor-pointer"
-                  >
-                    <option value="">Auto-detect (default)</option>
-                    {availableFormats
-                      .filter((f) => f !== "generic_fallback")
-                      .map((f) => (
-                        <option key={f} value={f}>{parserDisplayName(f)}</option>
-                      ))}
-                    <option value="generic_fallback">Generic (fallback)</option>
-                  </select>
-                </div>
               </div>
 
               {/* Time window */}
@@ -1027,8 +1831,8 @@ export default function Home() {
                     </span>
                   : "[ compress ]"}
               </button>
+              </>)} {/* end source === "paste" */}
             </div>
-          )}
 
           {/* ── Loading overlay when result exists and re-compressing ── */}
           {loading && result && (
@@ -1044,34 +1848,121 @@ export default function Home() {
           {result && (
             <div id="result-panel" className="space-y-5 animate-fade-in">
 
-              {/* Stats row — 3 cards (no separate confidence card) */}
-              <div className="grid grid-cols-3 gap-3">
-                <StatCard
-                  label="Format"
-                  value={parserDisplayName(result.detected_format)}
-                  accent={!showFormatWarning ? "text-green-400" : "text-amber-400"}
-                  sub={
-                    !showFormatWarning ? (
-                      <span className="text-[10px] font-mono text-green-500">✓ detected</span>
-                    ) : undefined
-                  }
+              {/* Sitecore Breadcrumb & Quick Switch */}
+              {activeSitecoreMeta && (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 font-mono text-xs">
+                  <div className="flex items-center gap-2 min-w-0 text-zinc-400 overflow-hidden text-ellipsis whitespace-nowrap">
+                    <span className="text-emerald-400 font-bold flex items-center gap-1.5 shrink-0">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]" />
+                      Sitecore Cloud
+                    </span>
+                    {activeSitecoreMeta.orgName && (
+                      <>
+                        <span className="text-zinc-600 shrink-0">/</span>
+                        <span className="text-zinc-200 font-semibold shrink-0">{activeSitecoreMeta.orgName}</span>
+                      </>
+                    )}
+                    {activeSitecoreMeta.projectName && (
+                      <>
+                        <span className="text-zinc-600 shrink-0">/</span>
+                        <span className="text-zinc-400 shrink-0">{activeSitecoreMeta.projectName}</span>
+                      </>
+                    )}
+                    {activeSitecoreMeta.envName && (
+                      <>
+                        <span className="text-zinc-600 shrink-0">/</span>
+                        <span className="text-zinc-300 shrink-0">{activeSitecoreMeta.envName}</span>
+                      </>
+                    )}
+                    <span className="text-zinc-600 shrink-0">/</span>
+                    <span className="text-emerald-300 font-bold truncate">{activeSitecoreMeta.logName}</span>
+                  </div>
+
+                  <button
+                    id="switch-log-btn"
+                    onClick={() => {
+                      setResult(null);
+                      setSource("sitecore");
+                    }}
+                    className="text-[11px] font-mono text-zinc-400 hover:text-green-400 hover:drop-shadow-[0_0_8px_rgba(74,222,128,0.4)] transition-all cursor-pointer shrink-0"
+                    title="Browse other logs in this environment"
+                  >
+                    [ switch log ]
+                  </button>
+                </div>
+              )}
+
+              {/* SCLA Severity & Volume Breakdown — 4 interactive cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <SCLACard
+                  label="Errors"
+                  value={sclaCounts.error.toLocaleString()}
+                  sub={`${errorClusters.length} unique pattern${errorClusters.length !== 1 ? "s" : ""}`}
+                  accent="text-red-400"
+                  borderClass="border-red-500/50"
+                  active={levelFilter === "error"}
+                  onClick={() => setLevelFilter(levelFilter === "error" ? "all" : "error")}
                 />
-                <StatCard
-                  label="Lines → Clusters"
-                  value={`${result.lines_in_window.toLocaleString()} → ${result.clusters.length.toLocaleString()}`}
+                <SCLACard
+                  label="Warnings"
+                  value={sclaCounts.warn.toLocaleString()}
+                  sub={`${warnClusters.length} unique pattern${warnClusters.length !== 1 ? "s" : ""}`}
+                  accent="text-amber-400"
+                  borderClass="border-amber-500/50"
+                  active={levelFilter === "warn"}
+                  onClick={() => setLevelFilter(levelFilter === "warn" ? "all" : "warn")}
+                />
+                <SCLACard
+                  label="Info & Debug"
+                  value={(sclaCounts.info + sclaCounts.debug).toLocaleString()}
+                  sub={`${infoClusters.length} unique pattern${infoClusters.length !== 1 ? "s" : ""}`}
                   accent="text-cyan-400"
+                  borderClass="border-cyan-500/50"
+                  active={levelFilter === "info"}
+                  onClick={() => setLevelFilter(levelFilter === "info" ? "all" : "info")}
                 />
-                <StatCard
-                  label="Compression"
-                  value={`${ratio}%`}
-                  accent={ratio > 80 ? "text-green-400" : "text-amber-400"}
+                <SCLACard
+                  label="Log Volume"
+                  value={`${result.lines_in_window.toLocaleString()} logs`}
+                  sub={
+                    <span>
+                      <strong className="text-emerald-400">{ratio}% tidy</strong> ({result.clusters.length} signatures)
+                      {result.time_range?.duration_str ? ` · ${result.time_range.duration_str}` : ""}
+                    </span>
+                  }
+                  accent="text-emerald-400"
+                  borderClass="border-emerald-500/50"
+                  active={levelFilter === "all"}
+                  onClick={() => setLevelFilter("all")}
                 />
               </div>
 
-              {/* Format detection warning (only for weak/generic detections) */}
-              {showFormatWarning && (
-                <div id="format-warning-banner" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5 text-xs font-mono text-amber-400">
-                  ⚠ Could not confidently match a known format ({(result.detection_confidence * 100).toFixed(0)}%) — falling back to generic parsing. Timestamp and level extraction may be less accurate.
+              {/* Top Repeating Hot Spots */}
+              {topHotSpots.length > 0 && (
+                <div id="hot-spots-section" className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-red-400 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_#ef4444]" />
+                      Top Repeating Issues & Hot Spots
+                    </h3>
+                    <span className="text-[11px] font-mono text-zinc-500 hidden sm:inline">
+                      Exceptions flooding this log run · click to locate
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {topHotSpots.map((cluster, i) => (
+                      <HotSpotCard
+                        key={cluster.cluster_id || cluster.template}
+                        cluster={cluster}
+                        rank={i + 1}
+                        onView={() => {
+                          setExpandedKeys((prev) => new Set([...prev, cluster.template]));
+                          const el = document.getElementById(`cluster-${cluster.cluster_id}`);
+                          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                        }}
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -1100,7 +1991,7 @@ export default function Home() {
                   </div>
                   <div className="font-mono text-xs text-zinc-600">
                     {result.total_lines > 0
-                      ? `${result.total_lines.toLocaleString()} lines were read — try a different parser or check the format.`
+                      ? `${result.total_lines.toLocaleString()} lines were read — check the format.`
                       : "Check the file encoding and format, or try pasting a sample directly."}
                   </div>
                 </div>
@@ -1109,10 +2000,10 @@ export default function Home() {
               {result.clusters.length > 0 && (
                 <>
                   {/* Top action bar */}
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-600">
+                  <div className="flex items-center justify-between gap-3 pt-1">
+                    <div className="flex items-center gap-3 text-[11px] font-mono text-zinc-500">
                       {highSevClusters.length > 0 && (
-                        <span className="flex items-center gap-1">
+                        <span className="flex items-center gap-1.5">
                           <span className={`w-1.5 h-1.5 rounded-full ${levelDotColor("ERROR")} inline-block`} />
                           {highSevClusters.length} high-severity
                         </span>
@@ -1123,21 +2014,21 @@ export default function Home() {
                         </span>
                       )}
                     </div>
-                    {/* Download + copy buttons */}
-                    <div className="flex items-center gap-2">
+                    {/* Download + copy buttons (boxless glowing text style) */}
+                    <div className="flex items-center gap-3">
                       <button
                         id="download-txt-btn"
                         onClick={handleDownloadTxt}
-                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 font-mono text-xs hover:border-green-500/40 hover:text-green-400 transition-colors"
+                        className="text-xs font-mono text-zinc-500 hover:text-green-400 hover:drop-shadow-[0_0_8px_rgba(74,222,128,0.5)] transition-all cursor-pointer"
                       >
-                        ↓ .txt
+                        [ ↓ .txt ]
                       </button>
                       <button
                         id="download-json-btn"
                         onClick={handleDownloadJson}
-                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 font-mono text-xs hover:border-cyan-500/40 hover:text-cyan-400 transition-colors"
+                        className="text-xs font-mono text-zinc-500 hover:text-cyan-400 hover:drop-shadow-[0_0_8px_rgba(34,211,238,0.5)] transition-all cursor-pointer"
                       >
-                        ↓ .json
+                        [ ↓ .json ]
                       </button>
                       <CopyBtn label="copy summary" getText={() => result.tidy_text_summary} />
                     </div>
@@ -1248,20 +2139,9 @@ export default function Home() {
                           ? <span className="text-green-400">✓ {file.name}</span>
                           : "upload file"}
                       </button>
-                      <select
-                        value={formatOverride}
-                        onChange={(e) => setFormatOverride(e.target.value)}
-                        className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 font-mono text-xs text-zinc-300 focus:outline-none focus:border-green-500/50 transition-colors"
-                      >
-                        <option value="">Auto-detect</option>
-                        {availableFormats
-                          .filter((f) => f !== "generic_fallback")
-                          .map((f) => <option key={f} value={f}>{parserDisplayName(f)}</option>)}
-                        <option value="generic_fallback">Generic</option>
-                      </select>
                       <button id="re-compress-btn" onClick={handleCompress} disabled={loading}
-                        className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-950 font-mono font-bold text-xs tracking-wider transition-all">
-                        compress
+                        className="px-6 py-2 rounded-lg bg-green-500 hover:bg-green-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-zinc-950 font-mono font-bold text-xs tracking-wider transition-all cursor-pointer">
+                        [ compress ]
                       </button>
                     </div>
                     {error && (

@@ -33,7 +33,8 @@ _STACK_FRAME_RE = re.compile(r"^\s+at\s+[\w\.<>\[\]`]+\(")
 
 # Classic full Sitecore line pattern (timestamp + level + optional thread + message).
 _FULL_LINE_DT_RE = re.compile(
-    r"^(?P<ts>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+"
+    r"^(?P<ts>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)\s+"
+    r"(?:\[(?P<thread_dt>[\w\.\-\s#]+)\]\s+)?"
     r"(?P<level>INFO|WARN(?:ING)?|ERROR|DEBUG|AUDIT|FATAL|CRITICAL)\s+"
     r"(?:(?P<source>[^\d][^\s]*(?:\s+#\d+)?)\s+\d+\s+\d{2}:\d{2}:\d{2}\s+"
     r"(?:INFO|WARN(?:ING)?|ERROR|DEBUG|AUDIT|FATAL|CRITICAL)\s+)?"
@@ -41,9 +42,13 @@ _FULL_LINE_DT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Time-only Sitecore line pattern (optional thread + time + level + message).
+# Time-only Sitecore line pattern (optional thread/pod + time + level + message).
+# Handles XM Cloud formats like:
+#   6k5m8 08:30:23 INFO  ManagedPoolThread #1 ...
+#   2340 22:38:51 INFO  [Index=sitecore_web_index] ...
+#   08:30:23 WARN  ...
 _FULL_LINE_TO_RE = re.compile(
-    r"^(?:(?P<thread_id>\d+)\s+)?(?P<time>\d{2}:\d{2}:\d{2})\s+"
+    r"^(?:(?P<thread_id>[\w\.\-]+(?:\s+#\d+)?)\s+)?(?P<time>\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)\s+"
     r"(?P<level>INFO|WARN(?:ING)?|ERROR|DEBUG|AUDIT|FATAL|CRITICAL)\s+"
     r"(?P<message>.+)$",
     re.IGNORECASE,
@@ -51,9 +56,14 @@ _FULL_LINE_TO_RE = re.compile(
 
 
 def _parse_timestamp(ts_str: str) -> Optional[datetime]:
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d  %H:%M:%S"):
+    ts_clean = ts_str.strip().replace(",", ".")
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d  %H:%M:%S",
+    ):
         try:
-            return datetime.strptime(ts_str.strip(), fmt)
+            return datetime.strptime(ts_clean, fmt)
         except ValueError:
             continue
     return None
@@ -100,16 +110,16 @@ class SitecoreParser(LogParser):
         thread_ratio = thread_hits / effective_n
 
         base_score = 0.0
-        if dt_ratio > 0.1:
-            base_score += 0.4
-        if to_ratio > 0.1:
-            base_score += 0.4
-        if thread_ratio > 0.05:
+        if dt_ratio > 0.05:
+            base_score += 0.5
+        if to_ratio > 0.05:
+            base_score += 0.5
+        if thread_ratio > 0.02:
             base_score += 0.3
 
         total_score = base_score + vocab_score
-        if dt_ratio + to_ratio > 0.3:
-            total_score += 0.3
+        if dt_ratio + to_ratio > 0.1:
+            total_score = max(total_score, 0.95)
 
         return min(total_score, 1.0)
 
@@ -140,15 +150,16 @@ class SitecoreParser(LogParser):
                 ts = _parse_timestamp(m_dt.group("ts"))
                 level_raw = m_dt.group("level").upper()
                 level = "WARN" if level_raw == "WARNING" else level_raw
-                source = m_dt.group("source")
+                source = m_dt.group("source") or (f"Thread [{m_dt.group('thread_dt')}]" if m_dt.group("thread_dt") else None)
                 message = m_dt.group("message").strip() + continuation
             else:
-                # 2. Try time-only pattern
+                # 2. Try time-only pattern (including XM Cloud pod IDs)
                 m_to = _FULL_LINE_TO_RE.match(first_line.rstrip("\r\n"))
                 if m_to:
                     level_raw = m_to.group("level").upper()
                     level = "WARN" if level_raw == "WARNING" else level_raw
-                    source = f"Thread #{m_to.group('thread_id')}" if m_to.group("thread_id") else None
+                    tid = m_to.group("thread_id")
+                    source = f"Thread #{tid}" if tid and tid.isdigit() else (tid if tid else None)
                     message = m_to.group("message").strip() + continuation
                     ts = parse_time_with_fallback(m_to.group("time"), fallback_date)
                 else:

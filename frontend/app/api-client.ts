@@ -42,6 +42,20 @@ export interface ClusterResult {
   occurrences_truncated: boolean;
 }
 
+export interface SeverityCounts {
+  error: number;
+  warn: number;
+  info: number;
+  debug: number;
+  other: number;
+}
+
+export interface TimeRange {
+  start?: string | null;
+  end?: string | null;
+  duration_str?: string | null;
+}
+
 export interface CompressionResponse {
   detected_format: string;
   detection_confidence: number;
@@ -51,6 +65,8 @@ export interface CompressionResponse {
   clusters: ClusterResult[];
   tidy_text_summary: string;
   no_date_warning: string | null;
+  severity_counts?: SeverityCounts;
+  time_range?: TimeRange;
 }
 
 export interface FormatListResponse {
@@ -98,4 +114,161 @@ export async function getFormats(): Promise<string[]> {
   if (!res.ok) throw new Error("Failed to fetch formats");
   const data = (await res.json()) as FormatListResponse;
   return data.formats;
+}
+
+// ── Sitecore Cloud Connector ──────────────────────────────────────────────────
+
+export interface SitecoreAuthStartResponse {
+  session_id: string;
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+}
+
+export interface SitecoreEnvironment {
+  id: string;
+  name: string;
+  projectId: string;
+  projectName: string;
+  provisioningStatus?: string;
+  target?: string;
+  isProduction?: boolean;
+  host?: string;
+  zone?: string;
+  branch?: string;
+  organizationId?: string;
+  organizationName?: string;
+}
+
+export interface SitecoreOrgInfo {
+  id: string;
+  name: string;
+}
+
+export interface SitecoreUserInfo {
+  email: string;
+  name: string;
+}
+
+export interface SitecoreSessionInfo {
+  valid: boolean;
+  organization?: SitecoreOrgInfo;
+  user?: SitecoreUserInfo;
+}
+
+export interface SitecoreEnvironmentsResponse {
+  environments: SitecoreEnvironment[];
+  count: number;
+  organization?: SitecoreOrgInfo;
+  user?: SitecoreUserInfo;
+}
+
+export interface SitecoreLogFile {
+  name: string;
+  lastModified: string | null;
+  type: string;
+  size: number | null;
+}
+
+export async function startSitecoreAuth(): Promise<SitecoreAuthStartResponse> {
+  const res = await fetch(`${API_BASE}/api/sitecore/auth/start`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? "Failed to start Sitecore auth");
+  }
+  return res.json();
+}
+
+export async function pollSitecoreAuth(
+  sessionId: string,
+  deviceCode: string,
+): Promise<{ status: "pending" | "ok" | "expired" | "slow_down" }> {
+  const res = await fetch(`${API_BASE}/api/sitecore/auth/poll`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, device_code: deviceCode }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? "Poll failed");
+  }
+  return res.json();
+}
+
+export async function checkSitecoreSession(
+  sessionId: string,
+): Promise<SitecoreSessionInfo> {
+  const res = await fetch(
+    `${API_BASE}/api/sitecore/session?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? "Session expired or invalid");
+  }
+  return res.json();
+}
+
+export async function disconnectSitecore(sessionId: string): Promise<void> {
+  await fetch(`${API_BASE}/api/sitecore/auth/disconnect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
+export async function getSitecoreEnvironments(
+  sessionId: string,
+): Promise<SitecoreEnvironmentsResponse> {
+  const res = await fetch(
+    `${API_BASE}/api/sitecore/environments?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? "Failed to load environments");
+  }
+  return res.json();
+}
+
+export async function getSiteCoreLogs(
+  sessionId: string,
+  environmentId: string,
+): Promise<SitecoreLogFile[]> {
+  const res = await fetch(
+    `${API_BASE}/api/sitecore/logs?session_id=${encodeURIComponent(sessionId)}&environment_id=${encodeURIComponent(environmentId)}`,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? "Failed to load logs");
+  }
+  const data = await res.json();
+  return data.logs ?? [];
+}
+
+export async function fetchAndCompressSitecoreLog(
+  sessionId: string,
+  environmentId: string,
+  logName: string,
+  startTime?: string | null,
+  endTime?: string | null,
+  formatOverride?: string | null,
+): Promise<CompressionResponse> {
+  const res = await fetch(`${API_BASE}/api/sitecore/fetch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      environment_id: environmentId,
+      log_name: logName,
+      start_time: startTime ?? null,
+      end_time: endTime ?? null,
+      format_override: formatOverride ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? "Compression failed");
+  }
+  return res.json();
 }

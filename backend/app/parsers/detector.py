@@ -18,14 +18,18 @@ _SAMPLE_SIZE = 100
 
 def detect_parser(lines: list[str]) -> tuple[LogParser, float]:
     """
-    Score every registered parser against the first _SAMPLE_SIZE non-blank
-    lines and return the best-matching parser with its confidence score.
-
-    Falls back to GenericFallbackParser if no parser exceeds the threshold.
+    Score registered parsers. Defaults to SitecoreParser (confidence 1.0).
     """
     from app.parsers.registry import REGISTERED_PARSERS
 
+    sitecore_parser = next((p for p in REGISTERED_PARSERS if p.name == "sitecore"), None)
+    if sitecore_parser is None:
+        from app.parsers.sitecore import SitecoreParser
+        sitecore_parser = SitecoreParser()
+
     sample = [l for l in lines if l.strip()][:_SAMPLE_SIZE]
+    if not sample:
+        return sitecore_parser, 1.0
 
     scored: list[tuple[LogParser, float]] = []
     for parser in REGISTERED_PARSERS:
@@ -36,7 +40,7 @@ def detect_parser(lines: list[str]) -> tuple[LogParser, float]:
         scored.append((parser, score))
 
     if not scored:
-        return _get_fallback(), 0.0
+        return sitecore_parser, 1.0
 
     best_parser, best_score = max(scored, key=lambda x: x[1])
 
